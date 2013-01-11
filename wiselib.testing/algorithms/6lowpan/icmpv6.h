@@ -202,6 +202,7 @@ namespace wiselib
 		ROUTER_ADVERTISEMENT = 134,
 		NEIGHBOR_SOLICITATION = 135,
 		NEIGHBOR_ADVERTISEMENT = 136,
+		RPL_CONTROL_MESSAGE = 155,
 		DUPLICATE_ADDRESS_REQUEST = TBD4,
 		DUPLICATE_ADDRESS_CONFIRMATION = TBD5
 		};
@@ -847,6 +848,10 @@ namespace wiselib
 			}
 		}
 	//----------------  ECHO messages processing part END----------------
+		else if( typecode == RPL_CONTROL_MESSAGE )
+		{
+			return;
+		}
 	//----------------  ND messages processing part ---------------------
 		else
 		{
