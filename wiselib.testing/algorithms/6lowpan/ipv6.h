@@ -204,6 +204,10 @@
 			return (interface_manager_->prefix_list[INTERFACE_RADIO][0].ip_address);
 		}
 		///@}
+		node_id_t global_id()
+		{
+			return (interface_manager_->prefix_list[INTERFACE_RADIO][1].ip_address);
+		}
 		
 		InterfaceManager_t* interface_manager_;
 		
