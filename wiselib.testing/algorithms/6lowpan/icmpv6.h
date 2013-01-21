@@ -707,7 +707,7 @@ namespace wiselib
 
 		IPv6Packet_t* message = packet_pool_mgr_->get_packet_pointer( packet_number );
 		
-		message->set_next_header(Radio_IP::ICMPV6);
+		message->set_transport_next_header(Radio_IP::ICMPV6);
 		message->set_hop_limit(255);
 		
 		//The source address will be set in the interface manager to support different interfaces and more addresses
@@ -720,7 +720,7 @@ namespace wiselib
 		message->set_traffic_class(0);
 		
 		//Echo request header 8 bytes + payload
-		message->set_length(8 + len);
+		message->set_transport_length(8 + len);
 		
 		//Message Type
 		uint8_t setter_byte = ECHO_REQUEST;
@@ -765,7 +765,7 @@ namespace wiselib
 		IPv6Packet_t* message = packet_pool_mgr_->get_packet_pointer( packet_number );
 		
 		//If it is not an ICMPv6 packet, just drop it
-		if( message->next_header() != Radio_IP::ICMPV6 )
+		if( message->transport_next_header() != Radio_IP::ICMPV6 )
 			return;
 		//data is NULL, use this pointer for the payload
 		data = message->payload();
@@ -832,7 +832,7 @@ namespace wiselib
 			{
 				#ifdef ICMPv6_LAYER_DEBUG
 				char str[43];
-				debug().debug( "ICMPv6 layer: Echo reply received from: %s (payload length: %i)", from.get_address(str), message->length()-8);
+				debug().debug( "ICMPv6 layer: Echo reply received from: %s (payload length: %i)", from.get_address(str), message->transport_length()-8);
 				#endif
 				packet_pool_mgr_->clean_packet( message );
 				uint8_t typecode_short = (uint8_t)typecode;
@@ -919,11 +919,11 @@ namespace wiselib
 			#endif
 				
 				//- ICMP length (derived from the IP length) is 8 or more octets.
-				if( message->length() < 8 )
+				if( message->transport_length() < 8 )
 				{
 					packet_pool_mgr_->clean_packet( message );
 					#ifdef ND_DEBUG
-					debug().debug( "ND incorrect length (%i)", message->length() );
+					debug().debug( "ND incorrect length (%i)", message->transport_length() );
 					#endif
 					return;
 				}
@@ -933,7 +933,7 @@ namespace wiselib
 				
 				link_layer_node_id_t ll_source = 0;
 				//Process the options
-				while( message->length() - act_pos > 0 )
+				while( message->transport_length() - act_pos > 0 )
 				{
 				
 					//- All included options have a length that is greater than zero.
@@ -941,7 +941,7 @@ namespace wiselib
 					{
 						packet_pool_mgr_->clean_packet( message );
 						#ifdef ND_DEBUG
-						debug().debug( "ND incorrect option length (%i) (pos: %i, full len: %i)", data[act_pos + 1], act_pos, message->length() );
+						debug().debug( "ND incorrect option length (%i) (pos: %i, full len: %i)", data[act_pos + 1], act_pos, message->transport_length() );
 						#endif
 						return;
 					}
@@ -976,11 +976,11 @@ namespace wiselib
 				}
 				
 				//- ICMP length (derived from the IP length) is 16 or more octets.
-				if( message->length() < 16 )
+				if( message->transport_length() < 16 )
 				{
 					packet_pool_mgr_->clean_packet( message );
 					#ifdef ND_DEBUG
-					debug().debug( "ND incorrect length (%i)", message->length() );
+					debug().debug( "ND incorrect length (%i)", message->transport_length() );
 					#endif
 					return;
 				}
@@ -992,14 +992,14 @@ namespace wiselib
 				
 			#ifdef LOWPAN_ROUTE_OVER
 				bool processing = false;
-				while(  message->length() - act_pos > 0 )
+				while(  message->transport_length() - act_pos > 0 )
 				{
 					//- All included options have a length that is greater than zero.
 					if( data[act_pos + 1] == 0 )
 					{
 						packet_pool_mgr_->clean_packet( message );
 						#ifdef ND_DEBUG
-						debug().debug( "ND incorrect option length (%i) type (%i) (pos: %i, full len: %i)", data[act_pos + 1], data[act_pos], act_pos, message->length() );
+						debug().debug( "ND incorrect option length (%i) type (%i) (pos: %i, full len: %i)", data[act_pos + 1], data[act_pos], act_pos, message->transport_length() );
 						#endif
 						return;
 					}
@@ -1070,14 +1070,14 @@ namespace wiselib
 				
 				link_layer_node_id_t ll_source = 0;
 				//Process the options
-				while( message->length() - act_pos > 0 )
+				while( message->transport_length() - act_pos > 0 )
 				{
 					//- All included options have a length that is greater than zero.
 					if( data[act_pos + 1] == 0 )
 					{
 						packet_pool_mgr_->clean_packet( message );
 						#ifdef ND_DEBUG
-						debug().debug( "ND incorrect option length (%i) type (%i) (pos: %i, full len: %i)", data[act_pos + 1], data[act_pos], act_pos, message->length() );
+						debug().debug( "ND incorrect option length (%i) type (%i) (pos: %i, full len: %i)", data[act_pos + 1], data[act_pos], act_pos, message->transport_length() );
 						#endif
 						return;
 					}
@@ -1140,7 +1140,7 @@ namespace wiselib
 				#endif
 				
 				//- ICMP length (derived from the IP length) is 24 or more octets.
-				if( message->length() < 24 )
+				if( message->transport_length() < 24 )
 				{
 					packet_pool_mgr_->clean_packet( message );
 					return;
@@ -1160,7 +1160,7 @@ namespace wiselib
 				
 				link_layer_node_id_t link_layer_source = 0;
 				//Process the options
-				while( message->length() - act_pos > 0 )
+				while( message->transport_length() - act_pos > 0 )
 				{
 					//- All included options have a length that is greater than zero.
 					if( data[act_pos + 1] == 0 )
@@ -1188,7 +1188,7 @@ namespace wiselib
 				#endif
 				
 				//- ICMP length (derived from the IP length) is 24 or more octets.
-				if( message->length() < 24 )
+				if( message->transport_length() < 24 )
 				{
 					packet_pool_mgr_->clean_packet( message );
 					return;
@@ -1209,7 +1209,7 @@ namespace wiselib
 				link_layer_node_id_t link_layer_source = 0;
 				bool processed = false;
 				//Process the options
-				while( message->length() - act_pos > 0 )
+				while( message->transport_length() - act_pos > 0 )
 				{
 					//- All included options have a length that is greater than zero.
 					if( data[act_pos + 1] == 0 )
@@ -1237,7 +1237,7 @@ namespace wiselib
 						act_pos += data[act_pos + 1] * 8;
 					
 					//Process again
-					//if( message->length() - act_pos == 0 && !processed )
+					//if( message->transport_length() - act_pos == 0 && !processed )
 						//act_pos = 24;
 				}
 				
@@ -1624,7 +1624,7 @@ namespace wiselib
 							*/
 		
 		//Set IP header fields
-		message->set_next_header(Radio_IP::ICMPV6);
+		message->set_transport_next_header(Radio_IP::ICMPV6);
 		message->set_hop_limit(255);
 		message->set_destination_address(*(dest_addr));
 		message->set_flow_label(0);
@@ -1790,7 +1790,7 @@ namespace wiselib
 		/*
 			SET the common fields
 							*/
-		message->set_length( length );
+		message->set_transport_length( length );
 		message->set_source_address(*(src_addr));
 		//Message Type
 		message->template set_payload<uint8_t>( &typecode, 0 );
@@ -1807,7 +1807,7 @@ namespace wiselib
 			message->target_interface = target_interface;
 		
  		//#ifdef ND_DEBUG
- 		//debug().debug(" ND send length: %i ", message->length() );
+ 		//debug().debug(" ND send length: %i ", message->transport_length() );
  		//#endif
 		
 		int result = radio_ip().send( *(dest_addr), packet_number, NULL );
