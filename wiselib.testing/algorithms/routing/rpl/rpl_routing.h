@@ -434,6 +434,8 @@ namespace wiselib
 		*/
 		int callback_id_;
 
+		int TLV_callback_id_;
+
 		//Uart::self_pointer_t uart_;
 
 		
@@ -641,6 +643,8 @@ namespace wiselib
 		
 		
 		callback_id_ = radio_ip().template reg_recv_callback<self_type, &self_type::receive>( this );
+
+		//TLV_callback_id_ = radio_ip().template reg_recv_callback<self_type, &self_type::handle_TLV>( this, Radio_IP::EH_HOHO, 4 );
 		
 		my_link_layer_address_ = radio().id();
 
@@ -2128,5 +2132,55 @@ namespace wiselib
 		return 50;
 	}
 
+	/**
+		* \brief Function to register TLV callbacks
+		* \param obj_pnt pointer to the type of the receiver
+		* \param type_value the type of the TLV
+		* \param length the length of the TLVs
+		*/
+		//In an "upper leyer" class --> for instance RPL
+		//Usage: TLV_callback_id_ = radio_ip().template reg_recv_callback<self_type, &self_type::handle_TLV>( this, [type], [length] );
+		//the length is the length of the content! (full length - the first 2 bytes)!
+		/*       handle_TLV( uint8_t packet_number, uint8_t* data_pointer )
+			{
+				//First byte: Type (setted by the Ipv6 layer)
+				//Second byte: Length (setted by the Ipv6 layer)
+				//Content...
+				debug_->debug( "TLV handler called: Type: %i Len: %i", data_pointer[0], data_pointer[1] );
+				if(data_pointer[2] == 1 )
+					debug_->debug(" TLV has been already filled, content: %i %i", data_pointer[2], data_pointer[3] );
+				else
+				{
+					...
+				}
+			}
+		*/
+/*
+	template<typename OsModel_P,
+		typename Radio_IP_P,
+		typename Radio_P,
+		typename Debug_P,
+		typename Timer_P,
+		typename Clock_P>
+	uint8_t
+	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
+	handle_TLV( uint8_t packet_number, uint8_t* data_pointer )
+	{
+
+		IPv6Packet_t* message = packet_pool_mgr_->get_packet_pointer( packet_number ); 
+		
+		uint16_t sender_rank = ( data_pointer[4] << 8 ) | data_pointer[5];
+
+		uint8_t down = data_pointer[2];
+		down = (down >> 7);
+		//data[2] = 1 means the packet is intended to go down
+		if( down == 1 && sender_rank > rank_ ) //inconsistency
+			return ???
+		
+		if( down == 0 && sender_rank > rank_ )
+			return ???
+			
+	}
+	*/
 }
 #endif
