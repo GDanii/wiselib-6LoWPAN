@@ -710,7 +710,7 @@ namespace wiselib
 			state_ = Dodag_root;
 			rank_ = min_hop_rank_increase_; //RFC6550 (pag.112 Section 17)
 			ocp_ = ocp;
-			mop_ = 1;
+			mop_ = 2; //Storing-mode
 			
 			act_nd_storage->is_border_router = true;
 			act_nd_storage->border_router_version_number = 1;
@@ -927,8 +927,10 @@ namespace wiselib
 		dao_message_->set_next_header(Radio_IP::ICMPV6);
 		dao_message_->set_hop_limit(255);
 		
-		dao_message_->set_source_address(my_global_address_);
-
+		if ( mop_ == 1 )
+			dao_message_->set_source_address(my_global_address_);
+		else if( mop_ == 2 )
+			dao_message_->set_source_address(my_address_);
 		//destination next_hop
 		dao_message_->set_destination_address(destination);
 		dao_message_->set_flow_label(0);
@@ -1223,7 +1225,7 @@ namespace wiselib
 			mop_check = ( mop_check << 2 );
 			mop_check = ( mop_check >> 5 );
 			mop_ = mop_check;
-			
+						
 			mop_set_ = false;
 			
 		}
@@ -1388,7 +1390,6 @@ namespace wiselib
 				//THIS IS ACCOMPLISHED BY THE ROUTE OVER MECHANISM, TO UPDATE!
 				if ( state_ == Dodag_root || state_ == Floating_Dodag_root )
 				{					
-					
 					uint8_t addr[16];
 					memcpy(addr, data + 34 ,16);
 					//This address needs to be rearranged before setting it
@@ -1421,33 +1422,49 @@ namespace wiselib
 				}
 				else
 				{
-					uint8_t addr[16];
-					memcpy(addr, data + 34 ,16);
-					//This address needs to be rearranged before setting it
-					uint8_t k = 0;
-					for( uint8_t i = 15; i>7; i--)
-					{
-						uint8_t temp;
-						temp = addr[i];
-						addr[i] = addr[k];
-						addr[k] = temp;
-						k++;
-					}
-					node_id_t transit;
-					transit.set_address(addr);
-					#ifdef ROUTING_RPL_DEBUG
-					char str3[43];
-					char str4[43];
-					debug().debug( "\nRPL Routing: NODE %s Received DAO from %s with transit %s, forwarding to %s\n", my_address_.get_address(str3), sender.get_address(str), transit.get_address(str2), preferred_parent_.get_address(str4) );
-					#endif
-					message->set_destination_address( preferred_parent_ );
-
-					//message->remote_ll_address = Radio_P::NULL_NODE_ID;
-					//message->target_interface = NUMBER_OF_INTERFACES;
-
-					radio_ip().send( preferred_parent_, packet_number, NULL );
+					//DAO received by a wrong node: in Non-Storing mode the receiver must be the root
+					//Try to understand how to manage this situation, even though it should not happen
+					packet_pool_mgr_->clean_packet( message );
 					return;
 				}
+				
+			}
+			//Storing mode
+			else if( mop_ == 2 )
+			{	
+				//In Storing mode DAOs are link-local unicasted to the parent(s)
+				//Update routing table... and then send the update to the parent(s)
+				uint8_t addr[16];
+				memcpy(addr, data + 28 ,16);
+				//This address needs to be rearranged before setting it
+				uint8_t k = 0;
+				for( uint8_t i = 15; i>7; i--)
+				{
+					uint8_t temp;
+					temp = addr[i];
+					addr[i] = addr[k];
+					addr[k] = temp;
+					k++;
+				}
+					
+				node_id_t target;
+				target.set_address(addr);
+
+				//In this case sender is link-local, target is global
+				Forwarding_table_value entry( sender, 0, 0, 0 );
+				radio_ip().routing_.forwarding_table_.insert( ft_pair_t( target, entry ) );
+
+				#ifdef ROUTING_RPL_DEBUG
+				char str3[43];
+				debug().debug( "\nRPL Routing: %s Received DAO with target: %s, next_hop: %s\n", my_address_.get_address(str), target.get_address(str2), sender.get_address(str3) );
+				#endif
+				
+				message->remote_ll_address = Radio_P::NULL_NODE_ID;
+				message->target_interface = NUMBER_OF_INTERFACES;
+				//now send this message to the preferred parent... or all the DAO parants?
+				send( preferred_parent_, packet_number, NULL ); 
+				
+				return;
 				
 			}
 		}
@@ -1544,15 +1561,17 @@ namespace wiselib
 		
 		radio_ip().routing_.print_forwarding_table();
 
-		//Now send DAO to the parent (because, as soon as this is the first dio, the parent is preferred)
-		//but, it is better to unicast it directly to the root by looking at the routing table
+		//Now send DAO to the parent if mop = 2, to the root if mop = 1		
 		//Note that in non-storing mode the root is the only entry in the RT of ordinary nodes
-		//Then if I find another better parent update by sending another DAO to that parent
-			
+		//In storing mode ipv6 source and destination addresses must be link-local
+					
 		uint8_t dao_length;
 		dao_length = prepare_dao();
 		dao_message_->set_length( dao_length );
-		send_dao( dodag_id_, dao_reference_number_, NULL );
+		if( mop_ == 1 )
+			send_dao( dodag_id_, dao_reference_number_, NULL );
+		else if( mop_ == 2 )
+			send_dao( preferred_parent_, dao_reference_number_, NULL );
 		
 		//THE DIO MESSAGE LENGTH HAS TO BE SET HERE
 		dio_message_->set_length( length );
@@ -1610,9 +1629,6 @@ namespace wiselib
 		//Other fields?
 		uint16_t current_ocp = ( data[ 28 + 10 ] << 8 ) | data[ 28 + 11 ];
 		
-		#ifdef ROUTING_RPL_DEBUG
-		debug().debug( "\nRPL Routing: OCP IS %i!\n", current_ocp );
-		#endif
 		dio_message_->template set_payload<uint8_t>( &option_type, 28, 1 );
 	
 		//Option Length
@@ -1864,10 +1880,10 @@ namespace wiselib
 		dio_message_->template set_payload<uint8_t>( &version_number_, position + 1, 1 );
 		dio_message_->template set_payload<uint16_t>( &rank_, position + 2, 1 );
 		uint8_t setter_byte = 0;
-		if ( grounded )//1(grounded) 0(predefined) 001(MOP = 1 Non-Storing mode) 000(default prf) = 2^7 + 2^3 = 136
-			setter_byte = 136;
+		if ( grounded )//1(grounded) 0(predefined) 010(MOP = 2 Storing mode) 000(default prf) = 2^7 + 2^4 = 144
+			setter_byte = 128 + ( mop_ << 3 );
 		else
-			setter_byte = 0;
+			setter_byte = ( mop_ << 3 );
 		dio_message_->template set_payload<uint8_t>( &setter_byte, position + 4, 1 );
 		setter_byte = 0;
 		//DTSN (used to maintain Downward routes) 
@@ -2031,6 +2047,8 @@ namespace wiselib
 	}
 
 	// -----------------------------------------------------------------------
+	//MODIFY
+	//NB: use the radio (and not the IP radio) to manage this kind of ND so that the fields of a message a re always compliants with the RFCs 
 	template<typename OsModel_P,
 		typename Radio_IP_P,
 		typename Radio_P,
@@ -2102,34 +2120,48 @@ namespace wiselib
 		//Flags (Default 0)
 		setter_byte = 0;
 		dao_message_->template set_payload<uint8_t>( &setter_byte, 26, 1 );
-		//Prefix length (Default 0, prefixes which represent sub-dodags not supported)
+		//Prefix length 16 (Route aggregation not supported, the target prefix is the entire IPv6 address of the target)
 		dao_message_->template set_payload<uint8_t>( &setter_byte, 27, 1 );
+
+		dao_message_->template set_payload<uint8_t[16]>( &my_global_address_.addr, 28, 1 );
 		//Transit Information Option		
 		setter_byte = TRANSIT_INFORMATION;
-		dao_message_->template set_payload<uint8_t>( &setter_byte, 28, 1 );
+		dao_message_->template set_payload<uint8_t>( &setter_byte, 44, 1 );
 		//Option Length: 4 (other header fields) + 16 (parent address) ... there can be more parents (for now just 1)		
-		setter_byte = 20;
-		dao_message_->template set_payload<uint8_t>( &setter_byte, 29, 1 );
+		if ( mop_ == 1 )
+			setter_byte = 20;
+		//Storing mode: no parent address
+		else if( mop_ == 2 )
+			setter_byte = 4;
+		dao_message_->template set_payload<uint8_t>( &setter_byte, 45, 1 );
 		//0(no external targets) 0000000(default flags) = 0;
 		setter_byte = 0;
-		dao_message_->template set_payload<uint8_t>( &setter_byte, 30, 1 );
+		dao_message_->template set_payload<uint8_t>( &setter_byte, 46, 1 );
 		//Path Control: to understand (for now 0)
-		dao_message_->template set_payload<uint8_t>( &setter_byte, 31, 1 );
+		dao_message_->template set_payload<uint8_t>( &setter_byte, 47, 1 );
 		//Path Sequence: to understand the difference with dao_sequence
-		dao_message_->template set_payload<uint8_t>( &dao_sequence_, 32, 1 );
+		dao_message_->template set_payload<uint8_t>( &dao_sequence_, 48, 1 );
 		//Path Lifetime (in lifetime units???): 255 means infinity, 0 means no path
 		setter_byte = 255;
-		dao_message_->template set_payload<uint8_t>( &dao_sequence_, 33, 1 );
-		//Parent Address. For now just 1 address
-		uint8_t addr[16];
-		addr[0] = 0xaa;
-		addr[1] = 0xaa;
-		for (uint8_t i = 2; i<16; i++)
-			addr[i] = preferred_parent_.addr[i];
+		dao_message_->template set_payload<uint8_t>( &setter_byte, 49, 1 );
+
+		//if mop = 2 (Storing mode) the DODAG Parent Adrress is not needed since the DAO is sent directly to the parent
+		if( mop_ == 1 )
+		{
+			//Parent Address. For now just 1 address
+			uint8_t addr[16];
+			addr[0] = 0xaa;
+			addr[1] = 0xaa;
+			for (uint8_t i = 2; i<16; i++)
+				addr[i] = preferred_parent_.addr[i];
 		
-		dao_message_->template set_payload<uint8_t[16]>( &addr, 34, 1 ); //RIGHT WAY WITH 1 AS 3rd PARAM
+			dao_message_->template set_payload<uint8_t[16]>( &addr, 50, 1 ); //RIGHT WAY WITH 1 AS 3rd PARAM
+
+			return 66;
+		}
+		else if( mop_ == 2 )
+			return 50;
 		
-		return 50;
 	}
 
 	/**
@@ -2155,7 +2187,8 @@ namespace wiselib
 				}
 			}
 		*/
-/*
+
+	/*
 	template<typename OsModel_P,
 		typename Radio_IP_P,
 		typename Radio_P,
