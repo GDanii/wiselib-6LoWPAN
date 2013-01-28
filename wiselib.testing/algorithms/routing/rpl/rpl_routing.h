@@ -22,7 +22,7 @@
 #include "util/base_classes/routing_base.h"
 #include "algorithms/6lowpan/ipv6_packet_pool_manager.h"
 
-
+//#include "algorithms/6lowpan/simple_queryable_routing.h"
 #include "util/pstl/map_static_vector.h"
 
 #include "config.h"
@@ -111,6 +111,9 @@ namespace wiselib
 
 		typedef wiselib::ForwardingTableValue<Radio_IP> Forwarding_table_value;
 		typedef wiselib::pair<node_id_t, Forwarding_table_value> ft_pair_t;
+
+		//typedef wiselib::StaticArrayRoutingTable<OsModel, Radio_IP, FORWARDING_TABLE_SIZE, Forwarding_table_value > ForwardingTable;
+		typedef typename Radio_IP::Routing_t::ForwardingTable::iterator ForwardingTableIterator;
 			
 
 		/**
@@ -162,11 +165,11 @@ namespace wiselib
 			RPL_TARGET_DESCRIPTOR = 0x09
 		};
 		// --------------------------------------------------------------------
-		//Actually OCP = 1 is another objective fuction already specified, To change		
+		//OF0 (RFC 6552) , MRHOF (RFC 6719) 	
 		enum ObjectiveFunctionTypes
 		{
 			OF0 = 0,  //In this case the rank is not considered a fixed point number, but an integer
-			OF_HOP_COUNT = 1,  //HOP COUNT CONSTRAINT (For Parent Selection) & METRIC (For the computation of the preferred parent)
+			MRHOF = 1,  //Minimum Rank with Hysteresis Objective Function
 			OF2 = 2,
 			OF3 = 3
 		};
@@ -301,6 +304,8 @@ namespace wiselib
 		int send_dio( node_id_t receiver, uint16_t len, block_data_t *data );
 
 		int send_dao( node_id_t destination, uint16_t len, block_data_t *data );
+	
+		int send_data( node_id_t destination );
 		
 		void threshold_timer_elapsed( void *userdata );
 	
@@ -331,6 +336,8 @@ namespace wiselib
 		uint8_t scan_neighbor( node_id_t from );
 
 		uint8_t prepare_dao();
+
+		int handle_TLV( uint8_t packet_number, uint8_t* data_pointer, bool only_usage );
 
 		time_t time()
 		{
@@ -411,12 +418,10 @@ namespace wiselib
 
 		Debug& debug()
 		{ return *debug_; }
-
 		
 		Clock& clock()
         	{ return *clock_; }
 		
-
 		typename Radio_IP::self_pointer_t radio_ip_;
 
 		typename Radio::self_pointer_t radio_;
@@ -434,7 +439,7 @@ namespace wiselib
 		*/
 		int callback_id_;
 
-		int TLV_callback_id_;
+		uint8_t TLV_callback_id_;
 
 		//Uart::self_pointer_t uart_;
 
@@ -490,6 +495,7 @@ namespace wiselib
 		bool mop_set_;
 
 		uint16_t rank_preferred_parent_;
+		uint16_t cur_min_path_cost_; //path cost of the current preferred parent
 						
 		//DIO fields
 		//for now suppose a node can belong to 1 RPLInstanceID at most		
@@ -644,7 +650,7 @@ namespace wiselib
 		
 		callback_id_ = radio_ip().template reg_recv_callback<self_type, &self_type::receive>( this );
 
-		//TLV_callback_id_ = radio_ip().template reg_recv_callback<self_type, &self_type::handle_TLV>( this, Radio_IP::EH_HOHO, 4 );
+		TLV_callback_id_ = radio_ip().template HOHO_reg_recv_callback<self_type, &self_type::handle_TLV>( this, Radio_IP::EH_HOHO, 4 );
 		
 		my_link_layer_address_ = radio().id();
 
@@ -776,6 +782,7 @@ namespace wiselib
 		debug().debug( "RPLRouting: My link-local address: %s My Global address: %s \n", my_address_.get_address(str), my_global_address_.get_address(str2) );
 		#endif
 		
+		/*
 		for (NeighborSet_iterator it = neighbor_set_.begin(); it != neighbor_set_.end(); it++) 
 		{
 			node_id_t node = it->first;
@@ -784,7 +791,8 @@ namespace wiselib
 			char str[43];
 			debug().debug( "\nRPLRouting: Neighbor: %s is %i \n", node.get_address(str), value );
 			#endif
-     		}		
+     		}
+		*/		
 				
 			
 		dio_message_ = packet_pool_mgr_->get_packet_pointer( dio_reference_number_ );
@@ -811,14 +819,14 @@ namespace wiselib
 		
 		if ( state_ == Dodag_root )
 		{		
-			block_data_t* data = dio_message_->payload();	
+			//block_data_t* data = dio_message_->payload();	
 			
 			version_number_ = 1;
 			imin_ = 2 << (dio_int_min_ - 1);
 			//imax_ = DEFAULT_DIO_INTERVAL_DOUBLINGS; (set by the constructor)
 			max_interval_ = (2 << (imax_ - 1)) * imin_; //(2^i_max) *imin_ (#imax_ doblings of imin_)
 			
-			dodag_id_ = my_address_;
+			dodag_id_ = my_global_address_;
 			preferred_parent_ = my_address_;  //Or Null_node_id?
 			
 			uint8_t dio_current_position = 4;
@@ -843,7 +851,7 @@ namespace wiselib
 			//------------------------------------------------------------------------------------------
 			//setting the total length of the payload
 			
-			dio_message_->set_length( dio_current_position ); 
+			dio_message_->set_transport_length( dio_current_position ); 
 			
 			//initialize timers
 			set_current_interval(0);
@@ -876,10 +884,41 @@ namespace wiselib
 			//Send DIS, and Start Timer (RFC6550 18.2.1.1) Floating DODAG if no DIO received
 			//For now don't send any initial DIS, if the timer expires without having received any DIO then create a Floatind DODAG
 			
-			dis_message_->set_length( 5 );
+			dis_message_->set_transport_length( 5 );
 			timer().template set_timer<self_type, &self_type::floating_timer_elapsed>( 3000, this, 0 );
 			
 		}
+	}
+	// -----------------------------------------------------------------------
+	template<typename OsModel_P,
+		typename Radio_IP_P,
+		typename Radio_P,
+		typename Debug_P,
+		typename Timer_P,
+		typename Clock_P>
+	int
+	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
+	send_data( node_id_t destination )  
+	{
+		IPv6Packet_t* data_packet;
+		uint8_t pointer = packet_pool_mgr_->get_unused_packet_with_number();
+		data_packet = packet_pool_mgr_->get_packet_pointer( pointer );
+		data_packet->set_transport_next_header( Radio_IP::UDP );
+
+		data_packet->set_hop_limit(255);
+		
+		data_packet->set_source_address(my_global_address_);
+
+		data_packet->set_destination_address(destination);
+		data_packet->set_flow_label(0);
+		data_packet->set_traffic_class(0);
+		
+		uint8_t prova = 15;
+		data_packet->template set_payload<uint8_t>( &prova, 0, 1 );
+		send( destination, pointer, NULL );
+
+		return SUCCESS;
+
 	}
 	// -----------------------------------------------------------------------
 	template<typename OsModel_P,
@@ -894,7 +933,7 @@ namespace wiselib
 	{
 
 		
-		dio_message_->set_next_header(Radio_IP::ICMPV6);
+		dio_message_->set_transport_next_header( Radio_IP::ICMPV6 );
 		dio_message_->set_hop_limit(255);
 		
 		dio_message_->set_source_address(my_address_);
@@ -924,7 +963,7 @@ namespace wiselib
 		char str[43];
 		debug().debug( "\nRPL Routing: %s SENDING DAO\n", my_global_address_.get_address( str ) );
 		#endif
-		dao_message_->set_next_header(Radio_IP::ICMPV6);
+		dao_message_->set_transport_next_header( Radio_IP::ICMPV6 );
 		dao_message_->set_hop_limit(255);
 		
 		if ( mop_ == 1 )
@@ -954,18 +993,8 @@ namespace wiselib
 	{
 		IPv6Packet_t* message = packet_pool_mgr_->get_packet_pointer( len );
 		
-		message->set_next_header(Radio_IP::ICMPV6);
-		message->set_hop_limit(255);
-		
-		
-		message->set_source_address(my_address_);
-
-
 		message->set_destination_address(destination);
-		message->set_flow_label(0);
-		message->set_traffic_class(0);
-
-		
+				
 		uint8_t result = radio_ip().send( destination, len, data );
 		if( result != ROUTING_CALLED )
 			packet_pool_mgr_->clean_packet( message );
@@ -1092,7 +1121,7 @@ namespace wiselib
 			
 			uint8_t dio_current_position = 4;
 			//Prepare the DIO packet
-			//False means not grounded... 
+			//False means not grounded (i.e. floating)... 
 			dio_current_position = dio_packet_initialization( dio_current_position, false );
 
 			//-----------------------------FILLING THE OPTIONS-----------------------------------------
@@ -1150,9 +1179,20 @@ namespace wiselib
 			return;
 		}
 		
-		
+		if( message->transport_next_header() == Radio_IP::UDP )
+		{	
+			//THEN ADD NOTIFY RECEIVER FUNCTION!
+			data = message->payload();
+			uint8_t what = data[0];
+			#ifdef ROUTING_RPL_DEBUG
+			debug().debug( "\nRPL Routing: %s Received MESSAGE from: %s with content: %i\n", my_global_address_.get_address(str), sender.get_address(str2), what);
+			#endif
+			
+			packet_pool_mgr_->clean_packet( message );
+			return;
+		}
 		//If it is not an ICMPv6 packet, just return... ADD UDP messages when ready to send data packet
-		if( message->next_header() != Radio_IP::ICMPV6 )
+		if( message->transport_next_header() != Radio_IP::ICMPV6 )
 		{	
 			
 			//packet_pool_mgr_->clean_packet( message ); //Don't drop it
@@ -1193,18 +1233,20 @@ namespace wiselib
 				//now send the response
 				
 				uint8_t num = packet_pool_mgr_->get_unused_packet_with_number();
-				IPv6Packet_t* resp = packet_pool_mgr_->get_packet_pointer( num );
+				//IPv6Packet_t* resp = packet_pool_mgr_->get_packet_pointer( num );
 					
 				uint8_t setter_byte = RPL_CONTROL_MESSAGE;
-				resp->template set_payload<uint8_t>( &setter_byte, 0, 1 ); 
+				message->template set_payload<uint8_t>( &setter_byte, 0, 1 ); 
 					
 				setter_byte = OTHERWISE;
-				resp->template set_payload<uint8_t>( &setter_byte, 1, 1 );
+				message->template set_payload<uint8_t>( &setter_byte, 1, 1 );
 		
-				setter_byte = 2; //1 for 1st BROADCAST, 2 For Response
-				resp->template set_payload<uint8_t>( &setter_byte, 4, 1 );
+				setter_byte = 2; //1 for 1st BROADCAST, 2 For Response UNICAST
+				message->template set_payload<uint8_t>( &setter_byte, 4, 1 );
+
+				message->set_source_address(my_address_);
 		
-				resp->set_length( 10 ); 
+				//resp->set_transport_length( 5 );
 								
 				send( sender, num, NULL );
 				
@@ -1260,7 +1302,7 @@ namespace wiselib
 				//... and the first option is DODAG_CONFIGURATION_OPTION (suppose it is always placed before the others)
 				//To update in order for this option to be placed everywhere (or not?)		
 			
-				uint16_t length = message->length();
+				uint16_t length = message->transport_length();
 				if ( length <= 28 ) 
 				{
 					//There's no configuration option
@@ -1283,7 +1325,7 @@ namespace wiselib
 			
 				if (version_number_ < data[5])
 				{
-					uint16_t length = message->length();
+					uint16_t length = message->transport_length();
 					if ( length <= 28 ) 
 					{
 						//There's no configuration option
@@ -1462,6 +1504,8 @@ namespace wiselib
 				message->remote_ll_address = Radio_P::NULL_NODE_ID;
 				message->target_interface = NUMBER_OF_INTERFACES;
 				//now send this message to the preferred parent... or all the DAO parants?
+				message->set_source_address(my_address_);
+
 				send( preferred_parent_, packet_number, NULL ); 
 				
 				return;
@@ -1567,14 +1611,14 @@ namespace wiselib
 					
 		uint8_t dao_length;
 		dao_length = prepare_dao();
-		dao_message_->set_length( dao_length );
+		dao_message_->set_transport_length( dao_length );
 		if( mop_ == 1 )
 			send_dao( dodag_id_, dao_reference_number_, NULL );
 		else if( mop_ == 2 )
 			send_dao( preferred_parent_, dao_reference_number_, NULL );
 		
 		//THE DIO MESSAGE LENGTH HAS TO BE SET HERE
-		dio_message_->set_length( length );
+		dio_message_->set_transport_length( length );
 		
 		//How can a node decide whether to be a leaf or not??????
 		//if the node is able to honor the MOP then it MAY be a router (not only, see constraints)
@@ -2059,6 +2103,8 @@ namespace wiselib
 	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
 	find_neighbors()
 	{
+		//radio_->send( Radio::BROADCAST_ADDRESS, 1, (block_data_t*)&msg );
+
 		#ifdef ROUTING_RPL_DEBUG
 		char str[43];
 		//debug().debug( "\nRPLRouting: Node: %s is finding neighbors \n", my_address_.get_address(str));
@@ -2080,7 +2126,15 @@ namespace wiselib
 		setter_byte = 1; //1 for 1st BROADCAST, 2 For Response
 		message->template set_payload<uint8_t>( &setter_byte, 4, 1 );
 
-		message->set_length( 5 ); 
+		message->set_transport_length( 5 ); 
+		
+		message->set_transport_next_header( Radio_IP::ICMPV6 );
+		message->set_hop_limit(255);
+				
+		message->set_source_address(my_address_);
+
+		message->set_flow_label(0);
+		message->set_traffic_class(0);
 
 		send( BROADCAST_ADDRESS, num, NULL );
 		
@@ -2114,8 +2168,8 @@ namespace wiselib
 		//Now add RPL Target option with the relative Transit Information Option
 		setter_byte = RPL_TARGET;
 		dao_message_->template set_payload<uint8_t>( &setter_byte, 24, 1 );
-		//option length 2 bytes (without the prefix)		
-		setter_byte = 2;
+		//option length 2 bytes (flags and prefix length) + 16 (prefix: entire IPv6 address)		
+		setter_byte = 18;
 		dao_message_->template set_payload<uint8_t>( &setter_byte, 25, 1 );
 		//Flags (Default 0)
 		setter_byte = 0;
@@ -2164,56 +2218,224 @@ namespace wiselib
 		
 	}
 
-	/**
-		* \brief Function to register TLV callbacks
-		* \param obj_pnt pointer to the type of the receiver
-		* \param type_value the type of the TLV
-		* \param length the length of the TLVs
-		*/
-		//In an "upper leyer" class --> for instance RPL
-		//Usage: TLV_callback_id_ = radio_ip().template reg_recv_callback<self_type, &self_type::handle_TLV>( this, [type], [length] );
-		//the length is the length of the content! (full length - the first 2 bytes)!
-		/*       handle_TLV( uint8_t packet_number, uint8_t* data_pointer )
-			{
-				//First byte: Type (setted by the Ipv6 layer)
-				//Second byte: Length (setted by the Ipv6 layer)
-				//Content...
-				debug_->debug( "TLV handler called: Type: %i Len: %i", data_pointer[0], data_pointer[1] );
-				if(data_pointer[2] == 1 )
-					debug_->debug(" TLV has been already filled, content: %i %i", data_pointer[2], data_pointer[3] );
-				else
-				{
-					...
-				}
-			}
-		*/
-
-	/*
+	// -----------------------------------------------------------------------		
 	template<typename OsModel_P,
 		typename Radio_IP_P,
 		typename Radio_P,
 		typename Debug_P,
 		typename Timer_P,
 		typename Clock_P>
-	uint8_t
+	int
 	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
-	handle_TLV( uint8_t packet_number, uint8_t* data_pointer )
+	handle_TLV( uint8_t packet_number, uint8_t* data_pointer, bool only_usage )
 	{
-
 		IPv6Packet_t* message = packet_pool_mgr_->get_packet_pointer( packet_number ); 
+		if( only_usage )
+		{
+			if( message->transport_length() == Radio_IP::ICMPV6 )
+				return Radio_IP::OUTOFUSE;
+			else
+				return Radio_IP::INUSE;
+		}
 		
-		uint16_t sender_rank = ( data_pointer[4] << 8 ) | data_pointer[5];
-
-		uint8_t down = data_pointer[2];
-		down = (down >> 7);
-		//data[2] = 1 means the packet is intended to go down
-		if( down == 1 && sender_rank > rank_ ) //inconsistency
-			return ???
-		
-		if( down == 0 && sender_rank > rank_ )
-			return ???
+		else
+		{
+			//First byte: Type (setted by the Ipv6 layer)
+			//Second byte: Length (setted by the Ipv6 layer)
+			//Content...
+			debug_->debug( "TLV handler called: Type: %i Len: %i", data_pointer[0], data_pointer[1] );
 			
+			node_id_t destination;
+			message->destination_address( destination );
+			ForwardingTableIterator it = radio_ip().routing_.forwarding_table_.find( destination );
+			if(data_pointer[3] == 0 ) //this means that the node is the source
+			{	
+				//first node, fill the HOHO EH fields
+				data_pointer[3] = rpl_instance_id_;
+				//RFC 6550 (sect 11.2): the source set to 0 the Rank field.					
+				data_pointer[4] = 0;
+				data_pointer[5] = 0;
+				//O bit: 1 if the next hop is DOWN the dodag, how can I know it?
+				//If the next hop is not the default route (preferred_parent) then it is down
+				//if there's no information about the dest, fill the RT with next hop: default route
+				//otherwise is down.
+								
+				if( it != radio_ip().routing_.forwarding_table_.end() && it->second.next_hop != preferred_parent_ )
+				{
+					//SET DOWN BIT = 1, RANK ERROR = 0 (first hop), Forwarding error = 0 : 2^7 = 128
+					data_pointer[2] = 128;
+				}
+				else
+				{
+					//UP
+					if ( preferred_parent_ == my_address_ )
+					{
+						//DESTINATION UNREACHABLE... WHAT SHOULD I DO? UNICAST MESSAGE TO THE SENDER WITH ERROR CODE??
+						return  Radio_IP::DROP_PACKET;
+					}
+						
+					//create entry preferred_parent_ of destination in order for the route over mechanism to know the next hop
+					if ( it == radio_ip().routing_.forwarding_table_.end() )
+					{		
+						Forwarding_table_value entry( preferred_parent_, 0, 0, 0 );
+						radio_ip().routing_.forwarding_table_.insert( ft_pair_t( destination, entry ) );
+					}
+					//SET DOWN BIT = 0, RANK ERROR = 0 (first hop), Forwarding error = 0
+					//uint8_t setter_byte = 0;
+					data_pointer[2] = 0;
+					
+								
+				}
+				return Radio_IP::CORRECT;
+			}
+			
+			else
+			{
+				//INTERMEDIATE NODE
+				uint8_t flags = data_pointer[2];
+				uint8_t down = (flags >> 7);
+				uint8_t rank_error = (flags << 1);
+				rank_error = ( rank_error >> 7 );
+				uint16_t sender_rank = ( data_pointer[4] << 8 ) | data_pointer[5];
+				if( sender_rank == 0 )
+				{
+					//This is the first router ==> add rank, of course don't check consistency
+					data_pointer[4] = (uint8_t) (rank_ >> 8 );
+					data_pointer[5] = (uint8_t) (rank_ );
+					
+					if( it != radio_ip().routing_.forwarding_table_.end() && it->second.next_hop != preferred_parent_ )
+					{
+						//This means that the destination is down
+						//SET DOWN BIT = 1, RANK ERROR = 0 (first hop), Forwarding error = 0 : 2^7 = 128
+						data_pointer[2] = 128;
+						return Radio_IP::CORRECT;
+					}
+					else
+					{
+						//UP
+						if( down == 1 )
+						{
+							//FIRST DOWN, THEN UP ===> BACK TO THE SENDER WITH FORWARDING ERROR (RFC 6550, pag 104)
+														
+							//For now just DROP THE PACKET
+							return Radio_IP::DROP_PACKET;
+						}
+			
+						if ( preferred_parent_ == my_address_ )
+						{
+							//CANNOT GO UP AGAIN, I'M THE ROOT
+							//DESTINATION UNREACHABLE... WHAT SHOULD I DO?
+							return  Radio_IP::DROP_PACKET;
+						}
+							
+						if ( it == radio_ip().routing_.forwarding_table_.end() )
+						{		
+							Forwarding_table_value entry( preferred_parent_, 0, 0, 0 );
+							radio_ip().routing_.forwarding_table_.insert( ft_pair_t( destination, entry ) );
+						}
+						//SET DOWN BIT = 0, RANK ERROR = 0 (first hop), Forwarding error = 0
+						data_pointer[2] = 0;
+						return Radio_IP::CORRECT;
+					}
+					
+				}
+				else
+				{
+					//This is not the first router ==> check rank
+					
+					if( ( down == 1 && sender_rank > rank_ ) || (down == 0 && sender_rank < rank_) ) //inconsistency
+					{
+						if ( rank_error == 1 )
+						{
+							//second inconsistency, DODAG REPAIR management, TO DO!
+							
+							//DROP THE PACKET
+							return Radio_IP::DROP_PACKET;
+						}
+						else
+						{	
+							// DOWN: 1, RANK_ERROR: 1 = 2^7 + 2^6 = 192
+							if ( down == 1 )
+								flags = 192;
+							else
+								flags = 64;
+							data_pointer[2] = flags;
+							//SET NEW RANK
+							//data_pointer[4] = (uint8_t) (rank_ >> 8 );
+							//data_pointer[5] = (uint8_t) (rank_ );
+							//return Radio_IP::CORRECT;
+						}
+						
+					}
+					if( down == 1 )
+					{
+						if( it == radio_ip().routing_.forwarding_table_.end() )
+						{
+							//FIRST DOWN, THEN UP ===> BACK TO THE SENDER WITH FORWARDING ERROR (RFC 6550, pag 104)
+														
+							//For now just DROP THE PACKET
+							return Radio_IP::DROP_PACKET;
+						}
+						else if( it->second.next_hop == preferred_parent_ )
+						{
+							//FIRST DOWN, THEN UP ===> BACK TO THE SENDER WITH FORWARDING ERROR (RFC 6550, pag 104)
+														
+							//For now just DROP THE PACKET
+							return Radio_IP::DROP_PACKET;
+						}
+						else
+							return Radio_IP::CORRECT;
+						
+					}
+					else
+					{
+						//WAS UP AGAIN
+						if( it != radio_ip().routing_.forwarding_table_.end() )
+						{
+							if( it->second.next_hop != preferred_parent_ )
+							{
+								//CHANGE DIRECTION FROM UP TO DOWN
+							
+								//SET DOWN BIT = 1
+								data_pointer[2] = 128;
+								data_pointer[4] = (uint8_t) (rank_ >> 8 );
+								data_pointer[5] = (uint8_t) (rank_ );
+								return Radio_IP::CORRECT;
+							}
+							else
+							{
+								//UP AGAIN AGAIN
+								if ( preferred_parent_ == my_address_ )
+								{
+									//CANNOT GO UP AGAIN, I'M THE ROOT
+									//DESTINATION UNREACHABLE... WHAT SHOULD I DO?
+									return  Radio_IP::DROP_PACKET;
+								}
+								
+								data_pointer[4] = (uint8_t) (rank_ >> 8 );
+								data_pointer[5] = (uint8_t) (rank_ );
+								return Radio_IP::CORRECT;
+							}							
+						}
+						else
+						{
+							//UP AGAIN AGAIN
+							if ( preferred_parent_ == my_address_ )
+							{
+								//CANNOT GO UP AGAIN, I'M THE ROOT
+								//DESTINATION UNREACHABLE... WHAT SHOULD I DO?
+								return  Radio_IP::DROP_PACKET;
+							}
+								
+							//UPDATE FORWARDING TABLE WITH DEFAULT ROUTE
+							Forwarding_table_value entry( preferred_parent_, 0, 0, 0 );
+							radio_ip().routing_.forwarding_table_.insert( ft_pair_t( destination, entry ) );
+							return Radio_IP::CORRECT;
+						}
+					}
+				}
+			}
+		}
 	}
-	*/
 }
 #endif
