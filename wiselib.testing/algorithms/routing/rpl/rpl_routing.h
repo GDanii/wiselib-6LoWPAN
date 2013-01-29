@@ -764,7 +764,7 @@ namespace wiselib
 		
 
 		//set timer in order for nodes to wait ND to configure their gloabal addresses
-		timer().template set_timer<self_type, &self_type::start2>( 3800, this, 0 );
+		timer().template set_timer<self_type, &self_type::start2>( 4000, this, 0 );
 		
 		return SUCCESS;
 	}
@@ -914,7 +914,7 @@ namespace wiselib
 		uint8_t pointer = packet_pool_mgr_->get_unused_packet_with_number();
 		data_packet = packet_pool_mgr_->get_packet_pointer( pointer );
 		data_packet->set_transport_next_header( Radio_IP::UDP );
-		data_packet->set_transport_length( 9 );
+		data_packet->set_transport_length( 10 );
 		data_packet->set_hop_limit(255);
 		
 		data_packet->set_source_address(my_global_address_);
@@ -923,8 +923,8 @@ namespace wiselib
 		data_packet->set_flow_label(0);
 		data_packet->set_traffic_class(0);
 		
-		uint8_t prova = 15;
-		data_packet->template set_payload<uint8_t>( &prova, 8, 1 );
+		uint8_t prova = 19;
+		data_packet->template set_payload<uint8_t>( &prova, 9, 1 );
 		send( destination, pointer, NULL );
 
 		return SUCCESS;
@@ -1199,7 +1199,7 @@ namespace wiselib
 		{	
 			//THEN ADD NOTIFY RECEIVER FUNCTION!
 			data = message->payload();
-			uint8_t what = data[8];
+			uint8_t what = data[9];
 			#ifdef ROUTING_RPL_DEBUG
 			debug().debug( "\nRPL Routing: %s Received MESSAGE from: %s with content: %i\n", my_global_address_.get_address(str), sender.get_address(str2), what);
 			#endif
@@ -1523,7 +1523,12 @@ namespace wiselib
 				char str3[43];
 				debug().debug( "\nRPL Routing: %s Received DAO with target: %s, next_hop: %s\n", my_address_.get_address(str), target.get_address(str2), sender.get_address(str3) );
 				#endif
-				
+				if( state_ == Dodag_root || state_ == Floating_Dodag_root )
+				{
+					packet_pool_mgr_->clean_packet( message );
+					return;
+				}			
+
 				message->remote_ll_address = Radio_P::NULL_NODE_ID;
 				message->target_interface = NUMBER_OF_INTERFACES;
 				//now send this message to the preferred parent... or all the DAO parants?
@@ -2437,8 +2442,11 @@ namespace wiselib
 					if( it != radio_ip().routing_.forwarding_table_.end() && it->second.next_hop != preferred_parent_ )
 					{
 						#ifdef ROUTING_RPL_DEBUG
-						debug().debug( "\nRPL Routing: INTERMEDIATE NODE 1st, FT contain destination\n" );
+						char str2[43];
+						char str3[43];
+						debug().debug( "\nRPL Routing: 1st INTERMEDIATE NODE %s, FT contains destination %s, next hop is %s\n", my_global_address_.get_address(str), destination.get_address(str2), it->second.next_hop.get_address(str3) );
 						#endif
+					
 						//This means that the destination is down
 						//SET DOWN BIT = 1, RANK ERROR = 0 (first hop), Forwarding error = 0 : 2^7 = 128
 						data_pointer[2] = 128;
@@ -2467,13 +2475,25 @@ namespace wiselib
 							
 						if ( it == radio_ip().routing_.forwarding_table_.end() )
 						{	
+							#ifdef ROUTING_RPL_DEBUG
+							char str[43];
+							char str2[43];
+							char str3[43];
+							debug().debug( "\nRPL Routing: 1st Interm Node %s. Up again. ADD %s as default next hop for destination %s \n", my_global_address_.get_address( str3 ), preferred_parent_.get_address(str), destination.get_address(str2) );
+							#endif	
 							Forwarding_table_value entry( preferred_parent_, 0, 0, 0 );
 							radio_ip().routing_.forwarding_table_.insert( ft_pair_t( destination, entry ) );
 						}
 						//SET DOWN BIT = 0, RANK ERROR = 0 (first hop), Forwarding error = 0
-						#ifdef ROUTING_RPL_DEBUG
-						debug().debug( "\nRPL Routing: INTERMEDIATE NODE 1st, UP AGAIN\n" );
-						#endif
+						else
+						{
+							#ifdef ROUTING_RPL_DEBUG
+							char str[43];
+							char str2[43];
+							char str3[43];
+							debug().debug( "\nRPL Routing: 1st Interm Node %s, UP AGAIN for dest %s, next hop is %s\n", my_global_address_.get_address( str3 ), destination.get_address(str2), it->second.next_hop.get_address(str) );
+							#endif
+						}
 						data_pointer[2] = 0;
 						return Radio_IP::CORRECT;
 					}
@@ -2535,7 +2555,10 @@ namespace wiselib
 						else
 						{
 							#ifdef ROUTING_RPL_DEBUG
-							debug().debug( "\nRPL Routing: INTERMEDIATE NODE, Going down again\n" );
+							char str[43];
+							char str2[43];
+							char str3[43];
+							debug().debug( "\nRPL Routing: Node %s INTERMEDIATE NODE, I have the routing Information for dest: %s, next hop is: %s! Going down again\n", my_global_address_.get_address(str), destination.get_address(str2), it->second.next_hop.get_address(str3) );
 							#endif
 							return Radio_IP::CORRECT;
 						}
@@ -2549,7 +2572,10 @@ namespace wiselib
 							{
 								//CHANGE DIRECTION FROM UP TO DOWN
 								#ifdef ROUTING_RPL_DEBUG
-								debug().debug( "\nRPL Routing: INTERMEDIATE NODE, Change Direction\n" );
+								char str[43];
+								char str2[43];
+								char str3[43];
+								debug().debug( "\nRPL Routing: Node %s INTERMEDIATE NODE, I have the routing Information for dest: %s, next hop is: %s! Change Direction\n", my_global_address_.get_address(str), destination.get_address(str2), it->second.next_hop.get_address(str3) );
 								#endif
 								//SET DOWN BIT = 1
 								data_pointer[2] = 128;
@@ -2560,20 +2586,20 @@ namespace wiselib
 							else
 							{
 								//UP AGAIN AGAIN
-								
+								char str[43];
 								if ( preferred_parent_ == my_address_ )
 								{
 									#ifdef ROUTING_RPL_DEBUG
-									debug().debug( "\nRPL Routing: ROOT INTER NODE, cannot go up again\n" );
+									debug().debug( "\nRPL Routing: ROOT INTER NODE, cannot go up again. Destination %s Unreachable\n", destination.get_address(str) );
 									#endif
 									//CANNOT GO UP AGAIN, I'M THE ROOT
 									//DESTINATION UNREACHABLE... WHAT SHOULD I DO?
 									return  Radio_IP::DROP_PACKET;
 								}
 								#ifdef ROUTING_RPL_DEBUG
-								debug().debug( "\nRPL Routing: INTER NODE, going up again again\n" );
+								char str2[43];
+								debug().debug( "\nRPL Routing: ROOT INTER NODE, going up again again. Destination %s, next_hop %s\n", destination.get_address(str), it->second.next_hop.get_address(str2));
 								#endif
-								
 								data_pointer[4] = (uint8_t) (rank_ >> 8 );
 								data_pointer[5] = (uint8_t) (rank_ );
 								return Radio_IP::CORRECT;
@@ -2591,12 +2617,15 @@ namespace wiselib
 								//DESTINATION UNREACHABLE... WHAT SHOULD I DO?
 								return  Radio_IP::DROP_PACKET;
 							}
-							#ifdef ROUTING_RPL_DEBUG
-							debug().debug( "\nRPL Routing: INTER NODE, going up again again\n" );
-							#endif
+							
 							//UPDATE FORWARDING TABLE WITH DEFAULT ROUTE
 							Forwarding_table_value entry( preferred_parent_, 0, 0, 0 );
 							radio_ip().routing_.forwarding_table_.insert( ft_pair_t( destination, entry ) );
+							#ifdef ROUTING_RPL_DEBUG
+							char str[43];							
+							char str2[43];
+							debug().debug( "\nRPL Routing: ROOT INTER NODE, going up again again. Destination %s, Just added next_hop %s\n", destination.get_address(str), preferred_parent_.get_address(str2));
+							#endif
 							return Radio_IP::CORRECT;
 						}
 					}
