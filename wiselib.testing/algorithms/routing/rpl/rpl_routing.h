@@ -698,13 +698,14 @@ namespace wiselib
 	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
 	set_dodag_root( bool root, uint16_t ocp = 0 )
 	{
-		
-		act_nd_storage = radio_ip().interface_manager_->get_nd_storage(0);
+		//COMMENT IN IF ND IS USED
+		//act_nd_storage = radio_ip().interface_manager_->get_nd_storage(0);
 		
 		find_neighbors();
 
 		//Every node is a 6LR in order to spread the address configuration all over the network;
-		act_nd_storage->is_router = true;
+		//COMMENT IN IF ND IS USED
+		//act_nd_storage->is_router = true;
 		if ( root )
 		{
 			uint8_t global_prefix[8];
@@ -724,16 +725,32 @@ namespace wiselib
 			ocp_ = ocp;
 			mop_ = 2; //Storing-mode
 			
+			//COMMENT IN IF ND IS USED
+			/*
 			act_nd_storage->is_border_router = true;
 			act_nd_storage->border_router_version_number = 1;
 			act_nd_storage->border_router_address = my_global_address_;
 			act_nd_storage->is_router = true;
-			
+			*/
 
 		}
 		else
-			state_ = Unconnected;
+		{
+			//COMMENT OUT IF ND IS USED
+			uint8_t global_prefix[8];
+			global_prefix[0]=0xAA;
+			global_prefix[1]=0xAA;
+			memset(&(global_prefix[2]),0, 6);
+						
+			my_global_address_.set_prefix(global_prefix);
+			my_global_address_.prefix_length = 64;
+
+			my_global_address_.set_long_iid( &my_link_layer_address_, true );
 			
+			radio_ip().interface_manager_->set_prefix_for_interface( my_global_address_.addr ,0 ,64 );
+			//TILL HERE
+			state_ = Unconnected;
+		}	
 		
 	}
 	
@@ -764,7 +781,8 @@ namespace wiselib
 		
 
 		//set timer in order for nodes to wait ND to configure their gloabal addresses
-		timer().template set_timer<self_type, &self_type::start2>( 4000, this, 0 );
+		//Increase the timer delay if ND is used
+		timer().template set_timer<self_type, &self_type::start2>( 1000, this, 0 );
 		
 		return SUCCESS;
 	}
@@ -780,8 +798,9 @@ namespace wiselib
 	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
 	start2( void* userdata )
 	{	
-		if( state_ != Dodag_root )
-			my_global_address_ = radio_ip().global_id();
+		//COMMENT IN THE NEXT TWO STATEMENTS IF ND IS USED
+		//if( state_ != Dodag_root )
+			//my_global_address_ = radio_ip().global_id();
 		#ifdef ROUTING_RPL_DEBUG
 		char str[43];
 		char str2[43];
@@ -891,12 +910,10 @@ namespace wiselib
 			//For now don't send any initial DIS, if the timer expires without having received any DIO then create a Floatind DODAG
 			
 			dis_message_->set_transport_length( 5 );
-			timer().template set_timer<self_type, &self_type::floating_timer_elapsed>( 2000, this, 0 );
+			timer().template set_timer<self_type, &self_type::floating_timer_elapsed>( 14000, this, 0 );
 			
 		}
-		#ifdef ROUTING_RPL_DEBUG
-		debug().debug( "\nRPL Routing: START 2 OK!\n" );
-		#endif
+		
 		
 	}
 	// -----------------------------------------------------------------------
@@ -1423,7 +1440,7 @@ namespace wiselib
 		
 							//clear() only if Non-storing mode is used...
 							//... otherwise find a way to delete only the root entry
-							radio_ip().routing_.forwarding_table_.clear();
+							//radio_ip().routing_.forwarding_table_.clear();
 							radio_ip().routing_.forwarding_table_.insert( ft_pair_t( dodag_id_, entry ) );
 		
 							//radio_ip().routing_.print_forwarding_table();
@@ -2598,7 +2615,7 @@ namespace wiselib
 								}
 								#ifdef ROUTING_RPL_DEBUG
 								char str2[43];
-								debug().debug( "\nRPL Routing: ROOT INTER NODE, going up again again. Destination %s, next_hop %s\n", destination.get_address(str), it->second.next_hop.get_address(str2));
+								debug().debug( "\nRPL Routing: INTER NODE, going up again again. Destination %s, next_hop %s\n", destination.get_address(str), it->second.next_hop.get_address(str2));
 								#endif
 								data_pointer[4] = (uint8_t) (rank_ >> 8 );
 								data_pointer[5] = (uint8_t) (rank_ );
@@ -2624,7 +2641,8 @@ namespace wiselib
 							#ifdef ROUTING_RPL_DEBUG
 							char str[43];							
 							char str2[43];
-							debug().debug( "\nRPL Routing: ROOT INTER NODE, going up again again. Destination %s, Just added next_hop %s\n", destination.get_address(str), preferred_parent_.get_address(str2));
+							char str3[43];
+							debug().debug( "\nRPL Routing: Node %s INTERMEDIATE NODE, going up again again. Destination %s, Just added next_hop %s\n", my_global_address_.get_address(str3), destination.get_address(str), preferred_parent_.get_address(str2));
 							#endif
 							return Radio_IP::CORRECT;
 						}

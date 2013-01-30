@@ -37,6 +37,9 @@
 #include "algorithms/6lowpan/icmpv6.h"
 #include "algorithms/6lowpan/udp.h"
 
+//add ifdef rpl
+#include "algorithms/routing/rpl/rpl_routing.h" //mine
+
 
 namespace wiselib
 {
@@ -69,7 +72,8 @@ namespace wiselib
 		typename Radio_P,
 		typename Debug_P,
 		typename Timer_P,
-		typename Uart_P>
+		typename Uart_P,
+		typename Clock_P>   //clock mine
 	class IPv6Stack
 	{
 	public:
@@ -79,8 +83,9 @@ namespace wiselib
 		typedef Debug_P Debug;
 		typedef Timer_P Timer;
 		typedef Uart_P Uart;
+		typedef Clock_P Clock;
 		
-		typedef IPv6Stack<OsModel, Radio, Debug, Timer, Uart> self_type;
+		typedef IPv6Stack<OsModel, Radio, Debug, Timer, Uart, Clock> self_type;
 		
 		typedef wiselib::UartRadio<OsModel, Radio, Debug, Timer, Uart> UartRadio_t;
 		typedef wiselib::LoWPAN<OsModel, Radio, Debug, Timer, UartRadio_t> LoWPAN_t;
@@ -92,6 +97,10 @@ namespace wiselib
 		typedef wiselib::UDP<OsModel, IPv6_t, Radio, Debug> UDP_t;
 		typedef wiselib::ICMPv6<OsModel, IPv6_t, Radio, Debug, Timer> ICMPv6_t;
 		typedef wiselib::IPv6PacketPoolManager<OsModel, Radio, Debug> Packet_Pool_Mgr_t;
+
+		typedef wiselib::NDStorage<Radio, Debug> NDStorage_t;
+
+		typedef wiselib::RPLRouting<OsModel, IPv6_t, Radio, Debug, Timer, Clock> RPL_t;	
 		
 		enum ErrorCodes
 		{
@@ -106,12 +115,13 @@ namespace wiselib
 		* This function initializes the - layers of the stack: 6LoWPAN, UartRadio, IPv6, UDP, ICMPv6
 		*				- managers of the stack: PacketPoolManager, InterfaceManager
 		*/
-		void init( Radio& radio, Debug& debug, Timer& timer, Uart& uart)
+		void init( Radio& radio, Debug& debug, Timer& timer, Uart& uart, Clock& clock)
 		{
 			radio_ = &radio;
 			debug_ = &debug;
 			timer_ = &timer;
 			uart_ = &uart;
+			clock_ = &clock;
 			
 			debug_->debug( "IPv6 stack init: %x", radio_->id());
 			
@@ -154,24 +164,41 @@ namespace wiselib
 			
 			lowpan.nd_storage_.set_debug( *debug_ );
 			
-// 			if( !lowpan.nd_storage_.is_router )
-// 				icmpv6.ND_timeout_manager_function( NULL );
+			/*
+			//ND: start if it is not a border router
+			if( !lowpan.nd_storage_.is_border_router )
+				icmpv6.ND_timeout_manager_function( NULL );
+			*/
+			
+			//add ifdef rpl
+			//Init RPLRouting
+			rpl.init( ipv6, *radio_, *debug_, *timer_, *clock_, &packet_pool_mgr);
+			
+			//Just register callback, not enable IP radio
+			if( SUCCESS != rpl.enable_radio() )
+				debug_->debug( "Fatal error: ICMPv6 layer enabling failed! " );
+			
 		}
 		
 		ICMPv6_t icmpv6; 
 		UDP_t udp;
 		InterfaceManager_t interface_manager;
+
+		RPL_t rpl; //mine
 		
 	private:
 		typename Radio::self_pointer_t radio_;
 		typename Debug::self_pointer_t debug_;
 		typename Timer::self_pointer_t timer_;
 		typename Uart::self_pointer_t uart_;
+		typename Clock::self_pointer_t clock_; //mine
 		
 		IPv6_t ipv6;
 		LoWPAN_t lowpan;
 		UartRadio_t uart_radio;
 		Packet_Pool_Mgr_t packet_pool_mgr;
+
+		NDStorage_t* act_nd_storage; //added from old class
 	};
 }
 #endif
