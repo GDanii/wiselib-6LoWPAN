@@ -324,6 +324,8 @@ namespace wiselib
 
 		uint8_t add_configuration_option( uint8_t position );
 
+		uint8_t add_prefix_information( uint8_t position );
+
 		uint8_t add_hopcount_metric( bool constraint, uint8_t position );
 
 		uint16_t scan_configuration_option( block_data_t *data );
@@ -698,13 +700,13 @@ namespace wiselib
 	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
 	set_dodag_root( bool root, uint16_t ocp = 0 )
 	{
-		//COMMENT IN IF ND IS USED
+		//COMMENT IN IF UNDERLYING ND IS USED, NO IF THE ADDRESS CONFIG IS MANAGED THROUGH DIOs
 		//act_nd_storage = radio_ip().interface_manager_->get_nd_storage(0);
 		
 		find_neighbors();
 
 		//Every node is a 6LR in order to spread the address configuration all over the network;
-		//COMMENT IN IF ND IS USED
+		//COMMENT IN IF UNDERLYING ND IS USED, NO IF THE ADDRESS CONFIG IS MANAGED THROUGH DIOs
 		//act_nd_storage->is_router = true;
 		if ( root )
 		{
@@ -725,7 +727,7 @@ namespace wiselib
 			ocp_ = ocp;
 			mop_ = 2; //Storing-mode
 			
-			//COMMENT IN IF ND IS USED
+			//COMMENT IN IF UNDERLYING ND IS USED, NO IF THE ADDRESS CONFIG IS MANAGED THROUGH DIOs
 			/*
 			act_nd_storage->is_border_router = true;
 			act_nd_storage->border_router_version_number = 1;
@@ -736,18 +738,18 @@ namespace wiselib
 		}
 		else
 		{
-			//COMMENT OUT IF ND IS USED
-			uint8_t global_prefix[8];
-			global_prefix[0]=0xAA;
-			global_prefix[1]=0xAA;
-			memset(&(global_prefix[2]),0, 6);
+			//COMMENT OUT IF NO ND IS USED
+			//uint8_t global_prefix[8];
+			//global_prefix[0]=0xAA;
+			//global_prefix[1]=0xAA;
+			//memset(&(global_prefix[2]),0, 6);
 						
-			my_global_address_.set_prefix(global_prefix);
-			my_global_address_.prefix_length = 64;
+			//my_global_address_.set_prefix(global_prefix);
+			//my_global_address_.prefix_length = 64;
 
-			my_global_address_.set_long_iid( &my_link_layer_address_, true );
+			//my_global_address_.set_long_iid( &my_link_layer_address_, true );
 			
-			radio_ip().interface_manager_->set_prefix_for_interface( my_global_address_.addr ,0 ,64 );
+			//radio_ip().interface_manager_->set_prefix_for_interface( my_global_address_.addr ,0 ,64 );
 			//TILL HERE
 			state_ = Unconnected;
 		}	
@@ -798,9 +800,10 @@ namespace wiselib
 	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
 	start2( void* userdata )
 	{	
-		//COMMENT IN THE NEXT TWO STATEMENTS IF ND IS USED
+		//COMMENT IN IF UNDERLYING ND IS USED, NO IF THE ADDRESS CONFIG IS MANAGED THROUGH DIOs
 		//if( state_ != Dodag_root )
 			//my_global_address_ = radio_ip().global_id();
+		//TILL HERE
 		#ifdef ROUTING_RPL_DEBUG
 		char str[43];
 		char str2[43];
@@ -859,6 +862,8 @@ namespace wiselib
 			dio_current_position = dio_packet_initialization( dio_current_position, true );
 
 			dio_current_position = add_configuration_option ( dio_current_position );
+
+			dio_current_position = add_prefix_information ( dio_current_position );
 				
 			//For now just 1 more OF.. to add more
 			if (ocp_ != 0)
@@ -910,7 +915,7 @@ namespace wiselib
 			//For now don't send any initial DIS, if the timer expires without having received any DIO then create a Floatind DODAG
 			
 			dis_message_->set_transport_length( 5 );
-			timer().template set_timer<self_type, &self_type::floating_timer_elapsed>( 14000, this, 0 );
+			timer().template set_timer<self_type, &self_type::floating_timer_elapsed>( 17000, this, 0 );
 			
 		}
 		
@@ -1141,14 +1146,15 @@ namespace wiselib
 			char str[43];
 			debug().debug( "\nRPL Routing: %s CREATE FLOATING DODAG\n", my_address_.get_address(str) );
 			#endif
-			/* 
+			
+			/*
 			state_ = Floating_Dodag_root;   //not for a long period of time, especiallly if battery powered
 			version_number_ = 1;
 			imin_ = 2 << (dio_int_min_ - 1);
 			//imax_ = DEFAULT_DIO_INTERVAL_DOUBLINGS; (set by the constructor)
 			max_interval_ = (2 << (imax_ - 1)) * imin_; //(2^i_max) *imin_ (#imax_ doblings of imin_)
 			
-			dodag_id_ = my_address_;
+			dodag_id_ = my_address_;   
 			preferred_parent_ = my_address_;  //Or Null_node_id?
 			
 			uint8_t dio_current_position = 4;
@@ -1157,12 +1163,12 @@ namespace wiselib
 			dio_current_position = dio_packet_initialization( dio_current_position, false );
 
 			//-----------------------------FILLING THE OPTIONS-----------------------------------------
-			//Floating DODAGs anly OF0 for the moment, only CONFIGURATION OPTION then
+			//Floating DODAGs only OF0 for the moment, only CONFIGURATION OPTION then
 			ocp_ = 0; 
 			
 			dio_current_position = add_configuration_option ( dio_current_position );
 
-			dio_message_->set_length( dio_current_position ); 
+			dio_message_->set_transport_length( dio_current_position ); 
 			
 			//initialize timers
 			set_current_interval(0);
@@ -1172,14 +1178,15 @@ namespace wiselib
 			debug().debug( "\nRPL Routing: Start as floating root\n" );
 			#endif
 			
-			//timer after which I must to double the timer value (if I don't detect inconsistencies)
+			//timer after which I must double the timer value (if I don't detect inconsistencies)
 			timer().template set_timer<self_type, &self_type::timer_elapsed>(
 					current_interval_, this, 0 );
 					
 			//timer after which I need to send the DIO message
 			timer().template set_timer<self_type, &self_type::threshold_timer_elapsed>( 
 						sending_threshold_, this, 0 );
-			*/
+			
+			*/	
 		}
 		
 		
@@ -1617,19 +1624,22 @@ namespace wiselib
 			return;
 				
 		//Now, since the CONFIGURATION_OPTION IS PRESENT I CAN START SCANNING ALL THE OPTIONS		
-		//TO DO!!!!!!!	if else ( RIO, PIO)
+		//TO DO!!!!!!!	if else ( RIO )
 		
 		ocp_ = scan_configuration_option( data ); 
 
 		length_checked = 44; // + 2 + option_length;
 		
 		uint8_t ret = 2;
-		if( ocp_!=0 )
+		
+		//options_check may contain a PIO!!		
+		//process options only if they are present (i.e. length > length_checked )
+		if( length > length_checked )
 			ret = options_check( data, length_checked, length, from );
 		
 		//retOF = 0 means  that the node who sent the message can't satisfy the Objective Function Constraints (it can't be a router)
 		//...then this node remains Unconnected (or in the transient state 'Connected')
-		//retOF = 1 means that the current node is a Leaf, it must not send dio_messages
+		//retOF = 1 means that the current node is a Leaf, it must not send dio_messages..
 		
 		if (ret <= 1 )
 			return;
@@ -1819,13 +1829,7 @@ namespace wiselib
 	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
 	options_check( block_data_t *data, uint16_t length_checked, uint16_t length, node_id_t sender )
 	{
-		//FIRST VERIFY OCP (ocp_)!!
-		if( ocp_ == 0 )
-		{
-			//Here  Objective Function 0 (RFC6552). No Metric Containers!
-			step_of_rank_ = DEFAULT_STEP_OF_RANK;
-			return 2;
-		}
+		
 		//uint16_t length_checked = 44; 
 		uint8_t option_type = data[ length_checked ]; 
 		uint8_t option_length = data[ length_checked + 1 ];
@@ -1835,10 +1839,43 @@ namespace wiselib
 
 		while ( length > length_checked )
 		{
+			if( option_type == PREFIX_INFORMATION )
+			{
 				
+				uint8_t prefix_len = data[ length_checked + 2 ];
+		
+				uint8_t flags = data[ length_checked + 3 ];
+				uint8_t on_link = (flags >> 7);	
+				uint8_t aut = (flags << 1);
+				aut = (flags >> 7);			
+				bool onlink_flag;
+				if( on_link == 1 )
+					onlink_flag = true;
+				else
+					onlink_flag = false;
+		
+				bool antonomous_flag;
+				if( aut == 1 )
+					antonomous_flag = true;
+				else
+					antonomous_flag = false;
+		
+				//
+				uint32_t valid_lifetime = ( data[ length_checked + 4 ] << 24 ) | ( data[ length_checked + 5 ] << 16 ) | ( data[ length_checked + 6 ] << 8 ) | data[ length_checked + 7 ];
+						
+				//
+				uint32_t prefered_lifetime = (  data[ length_checked + 8 ] << 24 ) | (  data[ length_checked + 9 ] << 16 ) | (  data[ length_checked + 10 ] << 8 ) | data[ length_checked + 11 ];
+						
+				radio_ip().interface_manager_->set_prefix_for_interface( data + length_checked + 16, Radio_IP::INTERFACE_RADIO, prefix_len, valid_lifetime, onlink_flag, prefered_lifetime, antonomous_flag );
+				
+				if( state_ != Dodag_root )
+					my_global_address_ = radio_ip().global_id();
+				
+			}
+
 			//A Metric Constraint is used to prune the tree:...
 			//if a constraint is not satisfied then the neighbor is not put in the parent set
-			if( option_type == DAG_METRIC_CONTAINER )
+			else if( option_type == DAG_METRIC_CONTAINER )
 			{
 				uint8_t metric_type = data [ length_checked + 2 ];
 				if( metric_type == HOP_COUNT )
@@ -1921,7 +1958,7 @@ namespace wiselib
 			//else if( option_type == ROUTING_INFORMATION )
 			
 
-			//else if( option_type == PREFIX_INFORMATION )
+			
 		
 			//set Option Type
 			dio_message_->template set_payload<uint8_t>( &option_type, length_checked, 1 );
@@ -1946,6 +1983,13 @@ namespace wiselib
 			length_checked = length_checked + 2 + option_length;
 			option_type = data[ length_checked ];
 			option_length = data[ length_checked + 1 ];
+		}
+		
+		if( ocp_ == 0 )
+		{
+			//Here  Objective Function 0 (RFC6552). No Metric Containers!
+			step_of_rank_ = DEFAULT_STEP_OF_RANK;
+			return 2;
 		}
 		
 		return 3;
@@ -2258,6 +2302,49 @@ namespace wiselib
 		}
 		else if( mop_ == 2 )
 			return 50;
+		
+	}
+
+	// -----------------------------------------------------------------------
+	template<typename OsModel_P,
+		typename Radio_IP_P,
+		typename Radio_P,
+		typename Debug_P,
+		typename Timer_P,
+		typename Clock_P>
+	uint8_t
+	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
+	add_prefix_information( uint8_t position )
+	{
+		//set the type
+		uint8_t setter_byte = PREFIX_INFORMATION;
+		dio_message_->template set_payload<uint8_t>( &setter_byte, position, 1);
+		
+		//Set the size
+		setter_byte = 30;
+		dio_message_->template set_payload<uint8_t>( &setter_byte, position + 1, 1);
+		
+		//Prefix length
+		dio_message_->template set_payload<uint8_t>( &(radio_ip().interface_manager_->prefix_list[Radio_IP::INTERFACE_RADIO][1]).ip_address.prefix_length, position + 2, 1 );
+		
+		//on-link flag, same network share same prefix=> always on-link
+		//1(on-link) 1(SAA), 0( to understand better ) 00000 (Reserved) = 2^7+2^6 = 192
+		setter_byte = 192;
+		dio_message_->template set_payload<uint8_t>( &setter_byte, position + 3, 1 );
+		
+		//Valid lifetime - uint32_t
+		dio_message_->template set_payload<uint32_t>( &(radio_ip().interface_manager_->prefix_list[Radio_IP::INTERFACE_RADIO][1].adv_valid_lifetime), position + 4, 1 );
+		
+		
+		//Prefered lifetime - uint32_t
+		dio_message_->template set_payload<uint32_t>( &(radio_ip().interface_manager_->prefix_list[Radio_IP::INTERFACE_RADIO][1].adv_prefered_lifetime), position + 8, 1 );
+		
+		// + 4 bytes reserved
+				
+		//Copy the prefix
+		dio_message_->template set_payload<uint8_t>( radio_ip().interface_manager_->prefix_list[Radio_IP::INTERFACE_RADIO][1].ip_address.addr, position + 16, 16 );
+		
+		return position + 32;
 		
 	}
 
