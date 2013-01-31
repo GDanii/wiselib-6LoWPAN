@@ -201,21 +201,7 @@ namespace wiselib
 			ROUTING_CALLED = Radio_IP::ROUTING_CALLED
 		};
 
-		/**
-		* Unspecified IP address: 0:0:0:0:0:0:0:0
-		*/
-		static const node_id_t NULL_NODE_ID;
-		
-		/**
-		* Multicast address for every link-local nodes: FF02:0:0:0:0:0:0:1
-		*/
-		static const node_id_t BROADCAST_ADDRESS;
-		
-		/**
-		* Multicast address for all routers: FF02:0:0:0:0:0:0:2
-		*/
-		static const node_id_t ALL_ROUTERS_ADDRESS;		
-		
+			
 		// TO UPDATE IN THE IPv6 CLASS... (or not?)
 		/**
 		* All-RPL-nodes multicast address: FF02:0:0:0:0:0:0:1A  TO UPDATE IN IPv6 Class
@@ -505,9 +491,10 @@ namespace wiselib
 		uint16_t rank_preferred_parent_;
 		uint16_t cur_min_path_cost_; //path cost of the current preferred parent
 						
-		//DIO fields
-		//for now suppose a node can belong to 1 RPLInstanceID at most
-		//same RPL_INSTANCE => same OF, 1 or more DODAGs
+		//A global RPLInstanceID must be unique to the whole LLN!
+		//Local Instance ==> only 1 DODAG, global instance ==>there can be more than 1 DODAGs
+		//If Local ==> PTP traffic not supported (RFC 6550 sect. 5.1)
+		//same global RPL_INSTANCE => same OF, 1 or more DODAGs, either Storing or NON-Storing
 		uint8_t rpl_instance_id_; //at most 127 different RPLInstanceIDs (8 bit, first bit = 0 indicates global)
 		uint8_t version_number_;
 		uint8_t version_last_time_;
@@ -536,43 +523,7 @@ namespace wiselib
 	// -----------------------------------------------------------------------
 	// -----------------------------------------------------------------------
 
-	//Initialize NULL_NODE_ID
-	template<typename OsModel_P,
-		typename Radio_IP_P,
-		typename Radio_P,
-		typename Debug_P,
-		typename Timer_P,
-		typename Clock_P>
-	const
-	typename Radio_IP_P::node_id_t
-	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::NULL_NODE_ID = Radio_IP::NULL_NODE_ID;
-	
-	// -----------------------------------------------------------------------
-	//Initialize BROADCAST_ADDRESS
-	template<typename OsModel_P,
-		typename Radio_IP_P,
-		typename Radio_P,
-		typename Debug_P,
-		typename Timer_P,
-		typename Clock_P>
-	const
-	typename Radio_IP_P::node_id_t
-	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::BROADCAST_ADDRESS = Radio_IP::BROADCAST_ADDRESS;
-	
-	// -----------------------------------------------------------------------
-	//Initialize ALL_ROUTERS_ADDRESS
-	template<typename OsModel_P,
-		typename Radio_IP_P,
-		typename Radio_P,
-		typename Debug_P,
-		typename Timer_P,
-		typename Clock_P>
-	const
-	typename Radio_IP_P::node_id_t
-	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::ALL_ROUTERS_ADDRESS = Radio_IP::ALL_ROUTERS_ADDRESS;
-	
-	// --------------------------------------------------------------------------
-	//Initialize ALL_RPL_NODES_MULTICAST_ADDRESS
+	//Initialize ALL_RPL_NODES_MULTICAST_ADDRESS //TO ADD IN THE IPv6 CLASS
 	template<typename OsModel_P,
 		typename Radio_IP_P,
 		typename Radio_P,
@@ -582,8 +533,6 @@ namespace wiselib
 	const
 	typename Radio_IP_P::node_id_t
 	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::ALL_RPL_NODES_MULTICAST_ADDRESS = Radio_IP::ALL_RPL_NODES_MULTICAST_ADDRESS;
-	
-	// -----------------------------------------------------------------------
 	
 	// -----------------------------------------------------------------------
 	template<typename OsModel_P,
@@ -1121,7 +1070,7 @@ namespace wiselib
 		
 		if ( dio_count_ < dio_redund_const_)
 		{
-			send_dio( BROADCAST_ADDRESS, dio_reference_number_, NULL );
+			send_dio( Radio_IP::BROADCAST_ADDRESS, dio_reference_number_, NULL );
 			
 			
 		}
@@ -2229,7 +2178,7 @@ namespace wiselib
 		message->set_flow_label(0);
 		message->set_traffic_class(0);
 
-		send( BROADCAST_ADDRESS, num, NULL );
+		send( Radio_IP::BROADCAST_ADDRESS, num, NULL );
 		
 
 		return SUCCESS;
@@ -2467,7 +2416,7 @@ namespace wiselib
 				if( it != radio_ip().routing_.forwarding_table_.end() && it->second.next_hop != preferred_parent_ )
 				{
 					#ifdef ROUTING_RPL_DEBUG
-					debug().debug( "\nRPL Routing: Source %s. FT contains destination\n", my_global_address_.get_address( str ) );
+					debug().debug( "\nRPL Routing: Source %s. FT contains destination %s, next hop is: %s\n", my_global_address_.get_address( str ), destination.get_address(str2), it->second.next_hop.get_address(str3) );
 					#endif
 					//SET DOWN BIT = 1, RANK ERROR = 0 (first hop), Forwarding error = 0 : 2^7 = 128
 					data_pointer[2] = 128;
@@ -2495,7 +2444,7 @@ namespace wiselib
 					else
 					{
 						#ifdef ROUTING_RPL_DEBUG
-						debug().debug( "\nRPL Routing: I'm %s. destination %s present in my FT, Change Direction!\n", my_global_address_.get_address(str2), destination.get_address(str) );
+						debug().debug( "\nRPL Routing: I'm %s. destination %s present in my FT, next hop is %s, Change Direction!\n", my_global_address_.get_address(str2), destination.get_address(str), it->second.next_hop.get_address(str3)  );
 						#endif
 						data_pointer[2] = 128;
 					}
