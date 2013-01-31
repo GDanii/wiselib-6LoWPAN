@@ -38,10 +38,10 @@
 #define MAX_BROADCAST_SEQUENCE_NUMBERS 15
 
 //IP packet store size
-#define IP_PACKET_POOL_SIZE 2
+#define IP_PACKET_POOL_SIZE 8       //was 2
 
 //Forwarding table size in the IPv6 layer
-#define FORWARDING_TABLE_SIZE 8
+#define FORWARDING_TABLE_SIZE 50     //was 8
 
 //Minimum: 1, the index starts from 0 at the get_interface function!
 #define NUMBER_OF_INTERFACES 2
@@ -52,5 +52,8 @@
 //Select routing method
 #define LOWPAN_ROUTE_OVER
 //#define LOWPAN_MESH_UNDER
+
+//Activate RPL Routing Management
+//#define RPL_DEFINED
 
 #endif
