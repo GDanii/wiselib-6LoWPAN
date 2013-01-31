@@ -44,6 +44,7 @@ public:
 		
 		ipv6_stack_.init(*radio_, *debug_, *timer_, *uart_, *clock_);
 
+		//Must receive from the UDP layer
 		callback_id = ipv6_stack_.rpl.reg_recv_callback<RPLTest,&RPLTest::receive_RPL_message>( this );
 
 		// --------------------------------------------------------------------
@@ -66,7 +67,7 @@ public:
 		ipv6_stack_.rpl.start();
 
 		//now start timer after which the application can send data packets
-		timer_->set_timer<RPLTest, &RPLTest::send_data>( 16000, this, 0 );
+		timer_->set_timer<RPLTest, &RPLTest::send_data>( 15500, this, 0 );
 
 	}
 

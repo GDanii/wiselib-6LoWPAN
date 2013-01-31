@@ -292,11 +292,15 @@ namespace wiselib
 		void timer_elapsed( void *userdata );
 		 ///@}
 
+		int send_dis( node_id_t destination, uint16_t len, block_data_t *data );
+ 
 		int send_dio( node_id_t receiver, uint16_t len, block_data_t *data );
 
 		int send_dao( node_id_t destination, uint16_t len, block_data_t *data );
 	
 		int send_data( node_id_t destination );
+
+		void dis_delay( void *userdata );
 		
 		void threshold_timer_elapsed( void *userdata );
 	
@@ -605,6 +609,22 @@ namespace wiselib
 		debug().debug( "\nRPL: initialization at %s\n", radio_ip().id().get_address(str));
 		#endif
 		
+		//All nodes maintain a reference to a DIO message
+		dio_reference_number_ = packet_pool_mgr_->get_unused_packet_with_number();
+		if( dio_reference_number_ == Packet_Pool_Mgr_t::NO_FREE_PACKET )
+			return ERR_UNSPEC;
+
+		dis_reference_number_ = packet_pool_mgr_->get_unused_packet_with_number();
+		if( dis_reference_number_ == Packet_Pool_Mgr_t::NO_FREE_PACKET )
+			return ERR_UNSPEC;
+
+		dao_reference_number_ = packet_pool_mgr_->get_unused_packet_with_number();
+		if( dao_reference_number_ == Packet_Pool_Mgr_t::NO_FREE_PACKET )
+			return ERR_UNSPEC;
+
+		dio_message_ = packet_pool_mgr_->get_packet_pointer( dio_reference_number_ );
+		dis_message_ = packet_pool_mgr_->get_packet_pointer( dis_reference_number_ );
+		dao_message_ = packet_pool_mgr_->get_packet_pointer( dao_reference_number_ );
 		
 		callback_id_ = radio_ip().template reg_recv_callback<self_type, &self_type::receive>( this );
 
@@ -652,6 +672,7 @@ namespace wiselib
 	{
 		//UNCOMMENT IF UNDERLYING ND IS USED, NO IF THE ADDRESS CONFIG IS MANAGED THROUGH DIOs
 		//act_nd_storage = radio_ip().interface_manager_->get_nd_storage(0);
+				
 		
 		find_neighbors();
 
@@ -717,23 +738,9 @@ namespace wiselib
 	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
 	start( void )
 	{
-		
-		//All nodes maintain a reference to a DIO message
-		dio_reference_number_ = packet_pool_mgr_->get_unused_packet_with_number();
-		if( dio_reference_number_ == Packet_Pool_Mgr_t::NO_FREE_PACKET )
-			return ERR_UNSPEC;
-
-		dis_reference_number_ = packet_pool_mgr_->get_unused_packet_with_number();
-		if( dis_reference_number_ == Packet_Pool_Mgr_t::NO_FREE_PACKET )
-			return ERR_UNSPEC;
-
-		dao_reference_number_ = packet_pool_mgr_->get_unused_packet_with_number();
-		if( dao_reference_number_ == Packet_Pool_Mgr_t::NO_FREE_PACKET )
-			return ERR_UNSPEC;
-		
-
 		//set timer in order for nodes to wait ND to configure their gloabal addresses
 		//Increase the timer delay if ND is used
+		//Perhaps I don't need to delay the start... think about it
 		timer().template set_timer<self_type, &self_type::start2>( 1000, this, 0 );
 		
 		return SUCCESS;
@@ -750,16 +757,19 @@ namespace wiselib
 	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
 	start2( void* userdata )
 	{	
-		//COMMENT IN IF UNDERLYING ND IS USED, NO IF THE ADDRESS CONFIG IS MANAGED THROUGH DIOs
+		//UNCOMMENT IF UNDERLYING ND IS USED, NO IF THE ADDRESS CONFIG IS MANAGED THROUGH DIOs
 		//if( state_ != Dodag_root )
 			//my_global_address_ = radio_ip().global_id();
 		//TILL HERE
+		
+		/*
 		#ifdef ROUTING_RPL_DEBUG
 		char str[43];
 		char str2[43];
 		debug().debug( "RPLRouting: My link-local address: %s My Global address: %s \n", my_address_.get_address(str), my_global_address_.get_address(str2) );
 		#endif
-		
+		*/
+
 		/*
 		for (NeighborSet_iterator it = neighbor_set_.begin(); it != neighbor_set_.end(); it++) 
 		{
@@ -773,11 +783,6 @@ namespace wiselib
 		*/		
 				
 			
-		dio_message_ = packet_pool_mgr_->get_packet_pointer( dio_reference_number_ );
-		dis_message_ = packet_pool_mgr_->get_packet_pointer( dis_reference_number_ );
-		dao_message_ = packet_pool_mgr_->get_packet_pointer( dao_reference_number_ );
-		
-			
 		//NB: the set_payload function starts to fill the packet fields from the 40th byte (the ICMP header)
 		uint8_t setter_byte = RPL_CONTROL_MESSAGE;
 		dio_message_->template set_payload<uint8_t>( &setter_byte, 0, 1 );
@@ -790,9 +795,7 @@ namespace wiselib
 		setter_byte = DEST_ADVERT_OBJECT;
 		dao_message_->template set_payload<uint8_t>( &setter_byte, 1, 1 );
 
-		setter_byte = 0;
-		dis_message_->template set_payload<uint8_t>( &setter_byte, 4, 1 );
-		dis_message_->template set_payload<uint8_t>( &setter_byte, 5, 1 );
+		
 		
 		if ( state_ == Dodag_root )
 		{		
@@ -838,7 +841,8 @@ namespace wiselib
 			compute_sending_threshold();
 
 			#ifdef ROUTING_RPL_DEBUG
-			debug().debug( "\nRPL Routing: Start as root/gateway\n" );
+			char str[43];
+			debug().debug( "\nRPL Routing: %s Start as root/gateway\n", my_address_.get_address(str) );
 			debug().debug( "\nRPL Routing: Main Timer value is %i ms\n", current_interval_);
 			#endif
 
@@ -857,16 +861,16 @@ namespace wiselib
 			
 			dodag_id_ = Radio_IP::NULL_NODE_ID;
 			preferred_parent_ = Radio_IP::NULL_NODE_ID;
-						
+			
+			setter_byte = 0;
+			dis_message_->template set_payload<uint8_t>( &setter_byte, 4, 1 );
+			dis_message_->template set_payload<uint8_t>( &setter_byte, 5, 1 );
+			dis_message_->set_transport_length( 6 );
+			timer().template set_timer<self_type, &self_type::dis_delay>( 5000, this, 0 );	
 			#ifdef ROUTING_RPL_DEBUG
-			debug().debug( "RPLRouting: Start as ordinary node\n" );
+			char str[43];
+			debug().debug( "RPLRouting: %s Start as ordinary node\n", my_address_.get_address(str) );
 			#endif
-			//Send DIS, and Start Timer (RFC6550 18.2.1.1) Floating DODAG if no DIO received
-			//For now don't send any initial DIS, if the timer expires without having received any DIO then create a Floatind DODAG
-			
-			dis_message_->set_transport_length( 5 );
-			timer().template set_timer<self_type, &self_type::floating_timer_elapsed>( 17000, this, 0 );
-			
 		}
 		
 		
@@ -971,6 +975,31 @@ namespace wiselib
 		typename Clock_P>
 	int
 	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
+	send_dis( node_id_t destination, uint16_t len, block_data_t *data )   
+	{
+		dis_message_->set_transport_next_header( Radio_IP::ICMPV6 );
+		dis_message_->set_hop_limit(255);
+		
+		dis_message_->set_source_address(my_address_);
+
+		dis_message_->set_destination_address(destination);
+		dis_message_->set_flow_label(0);
+		dis_message_->set_traffic_class(0);
+
+		
+		radio_ip().send( destination, len, data );
+	
+		return SUCCESS;
+	}
+	// -----------------------------------------------------------------------
+	template<typename OsModel_P,
+		typename Radio_IP_P,
+		typename Radio_P,
+		typename Debug_P,
+		typename Timer_P,
+		typename Clock_P>
+	int
+	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
 	send( node_id_t destination, uint16_t len, block_data_t *data )   //to understand better how to use it, even for data messages
 	{
 		IPv6Packet_t* message = packet_pool_mgr_->get_packet_pointer( len );
@@ -983,6 +1012,64 @@ namespace wiselib
 			packet_pool_mgr_->clean_packet( message );
 		
 		return result;
+	}
+
+	// -----------------------------------------------------------------------
+	
+	template<typename OsModel_P,
+		typename Radio_IP_P,
+		typename Radio_P,
+		typename Debug_P,
+		typename Timer_P,
+		typename Clock_P>
+	void
+	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
+	dis_delay( void* userdata )
+	{
+		//Send DIS, and Start Timer (RFC6550 18.2.1.1) Floating DODAG if no DIO received
+		//Before creating a Floating Dodag a node has to wait long...
+		//...especially if the entire network (and not only this node) is powering up  
+		if ( state_ == Unconnected )
+		{
+			//Unicast to a potential DODAG parent, see neighbor_set
+			node_id_t dest = Radio_IP::NULL_NODE_ID;
+		
+			for (NeighborSet_iterator it = neighbor_set_.begin(); it != neighbor_set_.end(); it++) 
+			{
+				if( it->second == 10 )
+				{
+					dest = it->first;
+					break;
+				}
+				else
+				{
+					#ifdef ROUTING_RPL_DEBUG
+					char str[43];
+					debug().debug( "\nRPLRouting: %s has no bidirect connection to %s\n", my_address_.get_address(str), it->first.get_address(str) );
+					#endif
+				}
+			}
+			if( dest != Radio_IP::NULL_NODE_ID )
+			{
+				#ifdef ROUTING_RPL_DEBUG
+				char str[43];
+				debug().debug( "\nRPLRouting: This node %s seems isolated\n", my_address_.get_address(str) );
+				#endif
+				send_dis( dest, dis_reference_number_, NULL );
+				//This timer depends on the size of the network
+				timer().template set_timer<self_type, &self_type::floating_timer_elapsed>( 15000, this, 0 );
+			
+			}
+			else
+			{
+				#ifdef ROUTING_RPL_DEBUG
+				char str[43];
+				debug().debug( "RPLRouting: This node %s seems isolated\n", my_address_.get_address(str) );
+				#endif
+				find_neighbors();
+				start();
+			}
+		}
 	}
 	// -----------------------------------------------------------------------
 	template<typename OsModel_P,
@@ -1069,11 +1156,7 @@ namespace wiselib
 	{
 		
 		if ( dio_count_ < dio_redund_const_)
-		{
 			send_dio( Radio_IP::BROADCAST_ADDRESS, dio_reference_number_, NULL );
-			
-			
-		}
 	}
 	// -----------------------------------------------------------------------
 	
@@ -1418,7 +1501,19 @@ namespace wiselib
 			}
 		}
 		else if( typecode == DODAG_INF_SOLICIT )
-		{}
+		{
+			packet_pool_mgr_->clean_packet( message );
+			if( state_ == Unconnected )
+				return;
+			#ifdef ROUTING_RPL_DEBUG
+			char str[43];
+			char str2[43];
+			debug().debug( "RPLRouting: %s Received Unicast DIS from %s, Sending Uincast DIO...\n", my_address_.get_address(str), sender.get_address(str2) );
+			#endif
+			//For now manage just the initial Solicitation (Unicast DIO to the sender)
+			send_dio( sender, dio_reference_number_, NULL );
+			
+		}
 		else if( typecode == DEST_ADVERT_OBJECT )
 		{
 			//MOP = 1 is Non-storing mode
@@ -1608,7 +1703,7 @@ namespace wiselib
 		
 		radio_ip().routing_.forwarding_table_.insert( ft_pair_t( dodag_id_, entry ) );
 		
-		radio_ip().routing_.print_forwarding_table();
+		//radio_ip().routing_.print_forwarding_table();
 
 		//Now send DAO to the parent if mop = 2, to the root if mop = 1		
 		//Note that in non-storing mode the root is the only entry in the RT of ordinary nodes
