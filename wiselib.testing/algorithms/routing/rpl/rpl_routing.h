@@ -1514,6 +1514,17 @@ namespace wiselib
 								//CHANGE THE RANK NODE ANYWAY AND ADVERTISE CHILDREN, HOW, FIRST_DIO????
 								//BUT WITH FIRST_DIO THE PARENT SET IS CLEARED!!!!
 								update_dio(); //TO DO!
+								
+								//SEND DAO, Change the DaoSequenceNumber
+								//uint8_t dao_length;
+								//dao_length = prepare_dao();
+								//dao_message_->set_transport_length( dao_length );
+								dao_sequence_ = dao_sequence_ + 1;
+								dao_message_->template set_payload<uint8_t>( &dao_sequence_, 7, 1 );
+								if( mop_ == 1 )
+									send_dao( dodag_id_, dao_reference_number_, NULL );
+								else if( mop_ == 2 )
+									send_dao( preferred_parent_, dao_reference_number_, NULL );
 							}
 							else
 							{
@@ -1551,7 +1562,19 @@ namespace wiselib
 							
 								//CHANGE THE RANK NODE ANYWAY AND ADVERTISE CHILDREN, HOW, FIRST_DIO????
 								//BUT WITH FIRST_DIO THE PARENT SET IS CLEARED!!!!
-								update_dio(); //TO DO!
+								update_dio();
+
+								//SEND DAO, NO NEED TO PREPARE IT.. BUT CHANGE THE DaoSequenceNumber
+								//uint8_t dao_length;
+								//dao_length = prepare_dao();
+								//dao_message_->set_transport_length( dao_length );
+							
+								dao_sequence_ = dao_sequence_ + 1;
+								dao_message_->template set_payload<uint8_t>( &dao_sequence_, 7, 1 );
+								if( mop_ == 1 )
+									send_dao( dodag_id_, dao_reference_number_, NULL );
+								else if( mop_ == 2 )
+									send_dao( preferred_parent_, dao_reference_number_, NULL );
 							}
 							else
 							{
@@ -2299,8 +2322,7 @@ namespace wiselib
 	}
 
 	// -----------------------------------------------------------------------
-	//MODIFY
-	//NB: use the radio (and not the IP radio) to manage this kind of ND so that the fields of a message a re always compliants with the RFCs 
+	
 	template<typename OsModel_P,
 		typename Radio_IP_P,
 		typename Radio_P,
@@ -2499,8 +2521,6 @@ namespace wiselib
 		}
 		
 		parent_set_.erase ( Radio_IP::NULL_NODE_ID );
-		
-
 	}
 
 	// -----------------------------------------------------------------------		
@@ -2573,10 +2593,6 @@ namespace wiselib
 						else
 							flags = 64;
 						data_pointer[2] = flags;
-						//SET NEW RANK
-						//data_pointer[4] = (uint8_t) (rank_ >> 8 );
-						//data_pointer[5] = (uint8_t) (rank_ );
-						//return Radio_IP::CORRECT;
 					}
 					
 				}
@@ -2785,6 +2801,8 @@ namespace wiselib
 							#ifdef ROUTING_RPL_DEBUG
 							debug().debug( "\nRPL Routing: Node %s INTERMEDIATE NODE, I have the routing Information for dest: %s, next hop is: %s! Going down again\n", my_global_address_.get_address(str), destination.get_address(str2), it->second.next_hop.get_address(str3) );
 							#endif
+							data_pointer[4] = (uint8_t) (rank_ >> 8 );
+							data_pointer[5] = (uint8_t) (rank_ );
 							return Radio_IP::CORRECT;
 						}
 					}
@@ -2847,6 +2865,8 @@ namespace wiselib
 							
 							debug().debug( "\nRPL Routing: Node %s INTERMEDIATE NODE, going up again again. Forward packet to default route %s for destination %s, \n", my_global_address_.get_address(str3), preferred_parent_.get_address(str2), destination.get_address(str));
 							#endif
+							data_pointer[4] = (uint8_t) (rank_ >> 8 );
+							data_pointer[5] = (uint8_t) (rank_ );
 							return Radio_IP::CORRECT;
 						}
 					}
