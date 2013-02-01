@@ -334,6 +334,8 @@ namespace wiselib
 
 		uint8_t prepare_dao();
 
+		void update_dio();
+
 		int handle_TLV( uint8_t packet_number, uint8_t* data_pointer, bool only_usage );
 
 		time_t time()
@@ -459,7 +461,7 @@ namespace wiselib
 		NeighborSet neighbor_set_;
 
 		ParentSet parent_set_; //vector of pairs <parent, rank>
-		
+				
 		TransitTable transit_table_; // not used if MOP = 0
 
 		IPv6Packet_t* dio_message_;
@@ -492,7 +494,7 @@ namespace wiselib
 		uint8_t mop_;
 		bool mop_set_;
 
-		uint16_t rank_preferred_parent_;
+		uint16_t rank_preferred_parent_; //Initialize it
 		uint16_t cur_min_path_cost_; //path cost of the current preferred parent
 						
 		//A global RPLInstanceID must be unique to the whole LLN!
@@ -562,7 +564,8 @@ namespace wiselib
 		imax_ (DEFAULT_DIO_INTERVAL_DOUBLINGS),
 		dio_redund_const_ (DEFAULT_DIO_REDUNDANCY_CONSTANT),
 		min_hop_rank_increase_ (DEFAULT_MIN_HOP_RANK_INCREASE),
-		preferred_parent_       ( Radio_IP::NULL_NODE_ID ) //IP
+		preferred_parent_ ( Radio_IP::NULL_NODE_ID ),
+		rank_preferred_parent_ (0xFFFF)
 	{}
 	// -----------------------------------------------------------------------
 	template<typename OsModel_P,
@@ -1369,6 +1372,7 @@ namespace wiselib
 		//DIO message
 		if ( typecode == DODAG_INF_OBJECT )
 		{
+			uint16_t length = message->transport_length();
 			//If a floating Dodag root receive a DIO then it may connect to the real dodag---> to update
 			if ( state_ == Dodag_root || state_ == Floating_Dodag_root )
 			{
@@ -1382,7 +1386,7 @@ namespace wiselib
 				//... and the first option is DODAG_CONFIGURATION_OPTION (suppose it is always placed before the others)
 				//To update in order for this option to be placed everywhere (or not?)		
 			
-				uint16_t length = message->transport_length();
+				
 				if ( length <= 28 ) 
 				{
 					//There's no configuration option
@@ -1398,14 +1402,20 @@ namespace wiselib
 
 			else if ( state_ == Connected || state_ == Router || state_ == Leaf )
 			{
+				//If the version is old ignore the message
+				if( version_number_ > data[5] )
+				{
+					packet_pool_mgr_->clean_packet( message );
+					return;
+				}
+				
 				//Compare the received message with the stored one..
 				//if they are the same DIO then increase the counter, otherwise it may be a new version
 				//Here I can also process DIO messages without the configuration option...
 				//... unless there's an update on the version
 			
-				if (version_number_ < data[5])
+				if( version_number_ < data[5] )
 				{
-					uint16_t length = message->transport_length();
 					if ( length <= 28 ) 
 					{
 						//There's no configuration option
@@ -1421,9 +1431,10 @@ namespace wiselib
 					//stop the current timer
 					change_version_ = true;
 					//create a new message and restart the timer (RFC6550 pag.74)
-					first_dio( from, data, length );
+					first_dio( sender, data, length );
 				}
 		
+				//same version
 				else
 				{
 					uint16_t parent_rank = ( data[6] << 8 ) | data[7];
@@ -1434,6 +1445,7 @@ namespace wiselib
 					//the node need to store the rank for each parent in the parent set
 
 					//process only messages sent by nodes whose rank is lower than the rank of the actual node
+					//otherwise the received rank is greater, update the parent!
 					if (parent_rank < rank_ )  //to add the equality? No
 					{
 						if( scan_neighbor( sender ) == 0 )
@@ -1443,61 +1455,118 @@ namespace wiselib
 							return;				
 						}
 
-					
 						ParentSet_iterator it = parent_set_.find(sender);
 						if (it == parent_set_.end())
+						{
 							parent_set_.insert( pair_t( sender, parent_rank ) );
-					
-					
-						//check whether the rank is different
+							//check if it is beter than the preferred parent, if so trigger update
+							//and delete parents whose rank is higher now!!!!!!!
+							if( parent_rank < rank_preferred_parent_ )
+							{	
+								preferred_parent_ = it->first;
+								rank_preferred_parent_ = it->second;
+								
+								//modify default route entry
+								radio_ip().routing_.forwarding_table_[Radio_IP::NULL_NODE_ID].next_hop = preferred_parent_;
+								//now compute new rank!
+								//should I stop the timers??? NO JUST CHANGE THE VALUES IN DIO MESSAGE
+								update_dio(); //THIS FUNCTION MUST ALSO UPDATE THE PARENT SET
+
+							}
+							else
+							{
+								//NOT SIGNIFICANT UPDATE
+								packet_pool_mgr_->clean_packet( message );
+								return;	
+							}
+							
+						}
+						//if the parent is present in the parent set check whether the rank is changed
+						//...if so delete it if it is greater than the one of the current node
 						else if( it->second != parent_rank ) 
 						{
+							//if( parent_rank_ > rank_ ) //IMPOSSIBLE (see instruction before)
 							parent_set_.erase( sender );
 							parent_set_.insert( pair_t( sender, parent_rank ) );
-						}
-					
-						if ( parent_rank < rank_preferred_parent_ )
-						{	
-						
-							//HERE RANK COMPUTATION!
-							preferred_parent_ = sender;
-							rank_preferred_parent_ = parent_rank;	
-
-							rank_increase_ = ((rank_factor_ * step_of_rank_) + rank_stretch_ ) * min_hop_rank_increase_;
-							rank_ = rank_preferred_parent_ + rank_increase_;
-
-							//Now scan the parent_set and delete neighbors whose rank is not less than the current one
-							for (ParentSet_iterator it = parent_set_.begin(); it != parent_set_.end(); it++)
-							{
-								if (rank_ <= it->second )
-									parent_set_.erase( it->first );
+							
+							if ( sender == preferred_parent_ )
+							{	
+								node_id_t best = Radio_IP::NULL_NODE_ID;
+								uint16_t best_rank = 0xFFFF;
+		
+								for (ParentSet_iterator it = parent_set_.begin(); it != parent_set_.end(); it++)
+								{
+									if ( it->second < best_rank )
+									{
+										best_rank = it->second;
+										best = it->first;
+									}
+								}
+															
+								if ( best != sender )
+								{
+									//NEW PREFERRED PARENT
+								 	preferred_parent_ = best;
+									radio_ip().routing_.forwarding_table_[Radio_IP::NULL_NODE_ID].next_hop = preferred_parent_;
+								}
+								rank_preferred_parent_ = best_rank;
+								
+								//CHANGE THE RANK NODE ANYWAY AND ADVERTISE CHILDREN, HOW, FIRST_DIO????
+								//BUT WITH FIRST_DIO THE PARENT SET IS CLEARED!!!!
+								update_dio(); //TO DO!
 							}
-						
-							//now delete the entry in the routing table and update it with the new preferred parent
-							//To change if a different MOP is used
-							
-							Forwarding_table_value entry( preferred_parent_, 0, 0, 0 );
-		
-							//clear() only if Non-storing mode is used...
-							//... otherwise find a way to delete only the root entry
-							//radio_ip().routing_.forwarding_table_.clear();
-							radio_ip().routing_.forwarding_table_.insert( ft_pair_t( dodag_id_, entry ) );
-		
-							//radio_ip().routing_.print_forwarding_table();
-							
+							else
+							{
+								//NOT SIGNIFICANT UPDATE
+								packet_pool_mgr_->clean_packet( message );
+								return;	
+							}
 						}
-					
 					}
+
 					else
-					{
-						//received a DIO from a node who's rank is higher, it cannot be a parent then
-						packet_pool_mgr_->clean_packet( message );
-						return;
-					}
-			
-				
-				}
+					{	
+						//parent_rank > rank
+						//delete parent from the parent set
+						parent_set_.erase( sender );
+						if ( sender == preferred_parent_ ) //Here more complex
+						{	
+							if ( !parent_set_.empty() )
+							{
+								node_id_t best = Radio_IP::NULL_NODE_ID;
+								uint16_t best_rank = 0xFFFF;
 		
+								for (ParentSet_iterator it = parent_set_.begin(); it != parent_set_.end(); it++)
+								{
+									if ( it->second < best_rank )
+									{
+										best_rank = it->second;
+										best = it->first;
+									}
+								}
+															
+								//NEW PREFERRED PARENT
+								preferred_parent_ = best;
+								rank_preferred_parent_ = best_rank;
+							
+								//CHANGE THE RANK NODE ANYWAY AND ADVERTISE CHILDREN, HOW, FIRST_DIO????
+								//BUT WITH FIRST_DIO THE PARENT SET IS CLEARED!!!!
+								update_dio(); //TO DO!
+							}
+							else
+							{
+								//NO MORE PARENTS!!!! MANAGE IT
+								//ADVERTISE INFINITE RANK?? TO DO
+							}
+						}
+								
+						else
+						{
+							packet_pool_mgr_->clean_packet( message );
+							return;	
+						}
+					}
+				}
 			}
 		}
 		else if( typecode == DODAG_INF_SOLICIT )
@@ -2398,6 +2467,42 @@ namespace wiselib
 		
 	}
 
+	// -----------------------------------------------------------------------
+	template<typename OsModel_P,
+		typename Radio_IP_P,
+		typename Radio_P,
+		typename Debug_P,
+		typename Timer_P,
+		typename Clock_P>
+	void
+	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
+	update_dio()
+	{
+		//change rank and update it, what else?
+		//step_of_rank depends on the metric! (updated when scanning Dag Metric Container, see obove)		
+		if (ocp_ == 0 )
+			rank_increase_ = ((rank_factor_ * step_of_rank_) + rank_stretch_ ) * min_hop_rank_increase_;
+		else
+			rank_increase_ = step_of_rank_ * min_hop_rank_increase_; //Understand it better (out of scope, up to me)
+
+		rank_ = rank_preferred_parent_ + rank_increase_;
+	
+		dio_message_->template set_payload<uint16_t>( &rank_, 6, 1 );
+
+		//now delete from the parent set entries whose rank is higher than the one of the current node
+		
+		//node_id_t scan_node;
+		for (ParentSet_iterator it = parent_set_.begin(); it != parent_set_.end(); it++)
+		{
+			if ( it->second > rank_ )
+				it->first = Radio_IP::NULL_NODE_ID;
+		}
+		
+		parent_set_.erase ( Radio_IP::NULL_NODE_ID );
+		
+
+	}
+
 	// -----------------------------------------------------------------------		
 	template<typename OsModel_P,
 		typename Radio_IP_P,
@@ -2475,6 +2580,10 @@ namespace wiselib
 					}
 					
 				}
+				
+				#ifdef ROUTING_RPL_DEBUG
+				debug().debug( "\nRPL Routing:THIS SHOULD BE PRINTED BY THE DESTINATION IF THE DODAG IS CONSISTENT.\n" );
+				#endif
 				return Radio_IP::CORRECT;
 			}
 
@@ -2521,7 +2630,10 @@ namespace wiselib
 				{
 					if( destination == dodag_id_ && preferred_parent_ == my_address_ )
 					{
-						//DEST UNREACHABLE... WHAT SHOULD I DO? UNICAST MESSAGE TO THE SENDER WITH ERROR CODE??
+						//DEST UNREACHABLE... WHAT SHOULD I DO? UNICAST MESSAGE TO THE SENDER WITH ERROR CODE??...
+						//.. MAYBE JUST DRP THE PACKET
+						//FIRST CHECK IF THE DESTINATION IS OUTSIDE THE DODAG, IF SO THE PACKET MUST BE FORWARDED OUTSIDE
+			
 						return  Radio_IP::DROP_PACKET;
 					}
 															
