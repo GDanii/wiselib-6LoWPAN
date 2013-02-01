@@ -114,6 +114,10 @@ namespace wiselib
 		typedef wiselib::pair<node_id_t, node_id_t> rt_pair_t;
 		typedef typename wiselib::MapStaticVector<OsModel , node_id_t, node_id_t, 30>::iterator TransitTable_iterator;
 
+		typedef MapStaticVector<OsModel , node_id_t, uint8_t, 50> TargetSet; //Freshness of targets
+		typedef wiselib::pair<node_id_t, uint8_t> targ_pair_t;
+		typedef typename wiselib::MapStaticVector<OsModel , node_id_t, uint8_t, 50>::iterator TargetSet_iterator;
+
 		typedef wiselib::ForwardingTableValue<Radio_IP> Forwarding_table_value;
 		typedef wiselib::pair<node_id_t, Forwarding_table_value> ft_pair_t;
 
@@ -461,6 +465,8 @@ namespace wiselib
 		NeighborSet neighbor_set_;
 
 		ParentSet parent_set_; //vector of pairs <parent, rank>
+
+		TargetSet target_set_;
 				
 		TransitTable transit_table_; // not used if MOP = 0
 
@@ -515,6 +521,7 @@ namespace wiselib
 		uint8_t dio_count_;
 
 		uint8_t dao_sequence_;
+		uint8_t path_sequence_;
 
 		
 		uint32_t max_interval_; //depends on imin and imax
@@ -553,6 +560,7 @@ namespace wiselib
 		state_ (Unconnected),
 		dio_count_ (0),
 		dao_sequence_ (0),
+		path_sequence_ (0),
 		version_last_time_ (0),
 		change_version_ (false),
 		count_timer_ (0),
@@ -1472,6 +1480,19 @@ namespace wiselib
 								//should I stop the timers??? NO JUST CHANGE THE VALUES IN DIO MESSAGE
 								update_dio(); //THIS FUNCTION MUST ALSO UPDATE THE PARENT SET
 
+								//SEND DAO, Change the DaoSequenceNumber and PathSequence
+								//uint8_t dao_length;
+								//dao_length = prepare_dao();
+								//dao_message_->set_transport_length( dao_length );
+								dao_sequence_ = dao_sequence_ + 1;
+								dao_message_->template set_payload<uint8_t>( &dao_sequence_, 7, 1 );
+								path_sequence_ = path_sequence_ + 1;
+								dao_message_->template set_payload<uint8_t>( &path_sequence_, 48, 1 );
+								if( mop_ == 1 )
+									send_dao( dodag_id_, dao_reference_number_, NULL );
+								else if( mop_ == 2 )
+									send_dao( preferred_parent_, dao_reference_number_, NULL );
+
 							}
 							else
 							{
@@ -1515,12 +1536,14 @@ namespace wiselib
 								//BUT WITH FIRST_DIO THE PARENT SET IS CLEARED!!!!
 								update_dio(); //TO DO!
 								
-								//SEND DAO, Change the DaoSequenceNumber
+								//SEND DAO, Change the DaoSequenceNumber and PathSequence
 								//uint8_t dao_length;
 								//dao_length = prepare_dao();
 								//dao_message_->set_transport_length( dao_length );
 								dao_sequence_ = dao_sequence_ + 1;
 								dao_message_->template set_payload<uint8_t>( &dao_sequence_, 7, 1 );
+								path_sequence_ = path_sequence_ + 1;
+								dao_message_->template set_payload<uint8_t>( &path_sequence_, 48, 1 );
 								if( mop_ == 1 )
 									send_dao( dodag_id_, dao_reference_number_, NULL );
 								else if( mop_ == 2 )
@@ -1571,6 +1594,8 @@ namespace wiselib
 							
 								dao_sequence_ = dao_sequence_ + 1;
 								dao_message_->template set_payload<uint8_t>( &dao_sequence_, 7, 1 );
+								path_sequence_ = path_sequence_ + 1;
+								dao_message_->template set_payload<uint8_t>( &path_sequence_, 48, 1 );
 								if( mop_ == 1 )
 									send_dao( dodag_id_, dao_reference_number_, NULL );
 								else if( mop_ == 2 )
@@ -1580,6 +1605,8 @@ namespace wiselib
 							{
 								//NO MORE PARENTS!!!! MANAGE IT
 								//ADVERTISE INFINITE RANK?? TO DO
+								//STOP TIMERS?
+								//CREATE FLOATING DODAG throhgh FLOATING TIMER?
 							}
 						}
 								
@@ -1675,10 +1702,24 @@ namespace wiselib
 					
 				node_id_t target;
 				target.set_address(addr);
-
+				
+				//VERIFY FRESHNESS OF THE TARGET
+				uint8_t freshness = data[48];
+				TargetSet_iterator it = target_set_.find( target );
+				if ( it != target_set_.end() )
+				{
+					if ( freshness < it->second )
+					{
+						//Old DAO message, suppress
+						packet_pool_mgr_->clean_packet( message );
+						return;
+					}
+				}				
+				
 				//In this case sender is link-local, target is global
 				Forwarding_table_value entry( sender, 0, 0, 0 );
 				radio_ip().routing_.forwarding_table_.insert( ft_pair_t( target, entry ) );
+				target_set_.insert( targ_pair_t ( target, freshness) );
 
 				#ifdef ROUTING_RPL_DEBUG
 				char str3[43];
@@ -1799,11 +1840,16 @@ namespace wiselib
 
 		//Now send DAO to the parent if mop = 2, to the root if mop = 1		
 		//Note that in non-storing mode the root is the only entry in the RT of ordinary nodes
-		//In storing mode ipv6 source and destination addresses must be link-local
+		//In storing mode ipv6 source and destination addresses inside a DAO must be link-local
 					
-		uint8_t dao_length;
-		dao_length = prepare_dao();
-		dao_message_->set_transport_length( dao_length );
+		//WHEN READY TO AGGREGATE USE DAO TIMER!
+		if ( mop_ != 0 )
+		{
+			uint8_t dao_length;
+			dao_length = prepare_dao();
+			dao_message_->set_transport_length( dao_length );
+		}
+
 		if( mop_ == 1 )
 			send_dao( dodag_id_, dao_reference_number_, NULL );
 		else if( mop_ == 2 )
@@ -1880,8 +1926,7 @@ namespace wiselib
 		
 		
 	}
-	
-	
+		
 	// -----------------------------------------------------------------------
 	
 	template<typename OsModel_P,
@@ -1983,9 +2028,7 @@ namespace wiselib
 		{
 			if( option_type == PREFIX_INFORMATION )
 			{
-				
 				uint8_t prefix_len = data[ length_checked + 2 ];
-		
 				uint8_t flags = data[ length_checked + 3 ];
 				uint8_t on_link = (flags >> 7);	
 				uint8_t aut = (flags << 1);
@@ -2099,9 +2142,7 @@ namespace wiselib
 
 			//else if( option_type == ROUTING_INFORMATION )
 			
-
-			
-		
+	
 			//set Option Type
 			dio_message_->template set_payload<uint8_t>( &option_type, length_checked, 1 );
 			//Option Length
@@ -2388,7 +2429,8 @@ namespace wiselib
 		dao_message_->template set_payload<uint8_t>( &setter_byte, 5, 1 );
 		//Reserved ( default 0 )
 		dao_message_->template set_payload<uint8_t>( &setter_byte, 6, 1 );
-		//dao sequence number, incremented each time a DAO is sent		
+		//dao sequence number, incremented each time a DAO is sent
+		//used to correlate a DAO message and a DAO_ACK message		
 		dao_message_->template set_payload<uint8_t>( &dao_sequence_, 7, 1 );
 		
 		//DODAG_ID field not present because I'm using a global RPLInstanceID 
@@ -2421,8 +2463,8 @@ namespace wiselib
 		dao_message_->template set_payload<uint8_t>( &setter_byte, 46, 1 );
 		//Path Control: to understand (for now 0)
 		dao_message_->template set_payload<uint8_t>( &setter_byte, 47, 1 );
-		//Path Sequence: to understand the difference with dao_sequence
-		dao_message_->template set_payload<uint8_t>( &dao_sequence_, 48, 1 );
+		//Path Sequence: higher values means freshness of the target
+		dao_message_->template set_payload<uint8_t>( &path_sequence_, 48, 1 );
 		//Path Lifetime (in lifetime units???): 255 means infinity, 0 means no path
 		setter_byte = 255;
 		dao_message_->template set_payload<uint8_t>( &setter_byte, 49, 1 );
