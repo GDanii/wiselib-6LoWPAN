@@ -110,10 +110,13 @@ namespace wiselib
 		typedef wiselib::pair<node_id_t, uint16_t> pair_t;
 		typedef typename wiselib::MapStaticVector<OsModel , node_id_t, uint16_t, 10>::iterator ParentSet_iterator;
 
+		//Non-Storing Mode
+		/* 
 		typedef MapStaticVector<OsModel , node_id_t, node_id_t, 30> TransitTable; //Maintaned by the root in Non-storing mode
 		typedef wiselib::pair<node_id_t, node_id_t> rt_pair_t;
 		typedef typename wiselib::MapStaticVector<OsModel , node_id_t, node_id_t, 30>::iterator TransitTable_iterator;
-
+		*/		
+			
 		typedef MapStaticVector<OsModel , node_id_t, uint8_t, 50> TargetSet; //Freshness of targets
 		typedef wiselib::pair<node_id_t, uint8_t> targ_pair_t;
 		typedef typename wiselib::MapStaticVector<OsModel , node_id_t, uint8_t, 50>::iterator TargetSet_iterator;
@@ -468,7 +471,8 @@ namespace wiselib
 
 		TargetSet target_set_;
 				
-		TransitTable transit_table_; // not used if MOP = 0
+		//Non-Storing Mode
+		//TransitTable transit_table_; // not used if MOP = 0 | 1
 
 		IPv6Packet_t* dio_message_;
 		IPv6Packet_t* dis_message_;
@@ -1422,8 +1426,14 @@ namespace wiselib
 				//Here I can also process DIO messages without the configuration option...
 				//... unless there's an update on the version
 			
-				if( version_number_ < data[5] )
+				if( version_number_ != data[5] )
 				{
+					if( version_number > data[5] )
+					{
+						//The received DIO represents an older version => ignore the message
+						packet_pool_mgr_->clean_packet( message );
+						return;
+					}
 					if ( length <= 28 ) 
 					{
 						//There's no configuration option
@@ -1534,7 +1544,7 @@ namespace wiselib
 								
 								//CHANGE THE RANK NODE ANYWAY AND ADVERTISE CHILDREN, HOW, FIRST_DIO????
 								//BUT WITH FIRST_DIO THE PARENT SET IS CLEARED!!!!
-								update_dio(); //TO DO!
+								update_dio();
 								
 								//SEND DAO, Change the DaoSequenceNumber and PathSequence
 								//uint8_t dao_length;
@@ -1635,9 +1645,12 @@ namespace wiselib
 		}
 		else if( typecode == DEST_ADVERT_OBJECT )
 		{
+			
 			//MOP = 1 is Non-storing mode
+			
 			if (mop_ == 1)
 			{
+				/*
 				//if I'm the root store in the routing table
 				//... otherwise forward the message to the next hop
 				//THIS IS ACCOMPLISHED BY THE ROUTE OVER MECHANISM, TO UPDATE!
@@ -1680,8 +1693,9 @@ namespace wiselib
 					packet_pool_mgr_->clean_packet( message );
 					return;
 				}
-				
+				*/
 			}
+			
 			//Storing mode
 			else if( mop_ == 2 )
 			{	
@@ -1744,8 +1758,7 @@ namespace wiselib
 		}
 		else if( typecode == DEST_ADVERT_OBJECT_ACK )
 		{
-			//IF MOP = 1 and I'm not the root send directly the msg to the next hop toward the node +
-			//then return without deleting the message from the pool?
+			//Don't need it for the moment
 		}
 		
 		packet_pool_mgr_->clean_packet( message );
@@ -2137,7 +2150,7 @@ namespace wiselib
 						}
 					}
 				}
-				//Other Metric types...
+				//else if (Other Metric types...)
 			}
 
 			//else if( option_type == ROUTING_INFORMATION )
@@ -2542,6 +2555,9 @@ namespace wiselib
 	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
 	update_dio()
 	{
+		//MUST FIRST CHECK OPTIONS, in order to understand whether there are constraints that must be satisfied
+		
+
 		//change rank and update it, what else?
 		//step_of_rank depends on the metric! (updated when scanning Dag Metric Container, see obove)		
 		if (ocp_ == 0 )
