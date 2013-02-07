@@ -40,6 +40,13 @@
 #define DEFAULT_STEP_OF_RANK 3
 #define DEFAULT_RANK_FACTOR 1
 
+//MRHOF Constants
+#define MAX_LINK_METRIC 512
+#define MAX_PATH_COST 32768
+#define PARENT_SWITCH_THRESHOLD 192
+#define PARENT_SET_SIZE 5    //max sixe = PARENT_SET_SIZE( 3, according to RFC6719 ) + (PARENT_SET_SIZE - 1) = 5 (i.e. MAX Parent Set Size)
+#define ALLOW_FLOATING_ROOT 0
+
 
 //These are not specified by IANA because the document is just a draft now
 //draft-ietf-6lowpan-nd-19
@@ -106,13 +113,10 @@ namespace wiselib
 		typedef wiselib::pair<node_id_t, uint8_t> neigh_pair_t;
 		typedef typename wiselib::MapStaticVector<OsModel , node_id_t, uint8_t, 20>::iterator NeighborSet_iterator;
 		
-		typedef MapStaticVector<OsModel , node_id_t, uint16_t, 10> ParentSet;
+		//Parent Set is the set of the candidate neighbors of RFC 6719
+		typedef MapStaticVector<OsModel , node_id_t, uint16_t, PARENT_SET_SIZE> ParentSet;
 		typedef wiselib::pair<node_id_t, uint16_t> pair_t;
-		typedef typename wiselib::MapStaticVector<OsModel , node_id_t, uint16_t, 10>::iterator ParentSet_iterator;
-
-		//typedef MapStaticVector<OsModel , node_id_t, uint8_t, 10> ETXTries;
-		//typedef wiselib::pair<node_id_t, uint8_t> etx_pair_t;
-		//typedef typename wiselib::MapStaticVector<OsModel , node_id_t, uint8_t, 10>::iterator ETXTries_iterator;
+		typedef typename wiselib::MapStaticVector<OsModel , node_id_t, uint16_t, PARENT_SET_SIZE>::iterator ParentSet_iterator;
 
 		typedef wiselib::pair<uint8_t, uint8_t> values_pair_t;
 
@@ -536,6 +540,7 @@ namespace wiselib
 		float rank_increase_;
 		uint16_t rank_stretch_;
 		uint16_t min_hop_rank_increase_;
+		uint16_t DAGMaxRankIncrease_;
 		uint16_t rank_;
 
 		uint8_t mop_;
@@ -546,7 +551,7 @@ namespace wiselib
 		bool prefix_present_;
 
 		uint16_t rank_preferred_parent_; //Initialize it
-		uint16_t cur_min_path_cost_; //path cost of the current preferred parent
+		uint16_t cur_min_path_cost_; //path cost of the current preferred parent (RFC 6719, sect. 3.2), to allow hysteresis
 						
 		//A global RPLInstanceID must be unique to the whole LLN!
 		//Local Instance ==> only 1 DODAG, global instance ==>there can be more than 1 DODAGs
@@ -619,6 +624,7 @@ namespace wiselib
 		imax_ (DEFAULT_DIO_INTERVAL_DOUBLINGS),
 		dio_redund_const_ (DEFAULT_DIO_REDUNDANCY_CONSTANT),
 		min_hop_rank_increase_ (DEFAULT_MIN_HOP_RANK_INCREASE),
+		DAGMaxRankIncrease_ ( 0 ), //0 means disabled
 		preferred_parent_ ( Radio_IP::NULL_NODE_ID ),
 		rank_preferred_parent_ (0xFFFF)
 	{}
@@ -758,6 +764,13 @@ namespace wiselib
 			{
 				min_hop_rank_increase_ = 8; //if integral part of rank is 8 bit, then max 32 hops
 				rank_ = ( min_hop_rank_increase_ << 8 );
+				#ifdef ROUTING_RPL_DEBUG
+				uint8_t int_part = (rank_ >> 8);
+				uint16_t dec_part = (rank_ << 8);
+				dec_part = (dec_part >> 8);
+				debug().debug( "RPLRouting: Root, set rank: int part %i, dec part %i \n", int_part, dec_part  );
+				#endif
+				
 			}
 			
 			else
@@ -1586,7 +1599,9 @@ namespace wiselib
 				else
 				{
 					uint16_t parent_rank = ( data[6] << 8 ) | data[7];
-					
+					if( etx_ )
+						parent_rank = parent_rank + min_hop_rank_increase_;
+
 					dio_count_ = dio_count_ + 1;
 
 					//the rank is relative to the preferred parent! ...
@@ -1606,6 +1621,7 @@ namespace wiselib
 						ParentSet_iterator it = parent_set_.find(sender);
 						if (it == parent_set_.end())
 						{
+							
 							parent_set_.insert( pair_t( sender, parent_rank ) );
 							//check if it is beter than the preferred parent, if so trigger update
 							//and delete parents whose rank is higher now!!!!!!!
@@ -2215,6 +2231,8 @@ namespace wiselib
 		imax_ = data[ length_checked + 3 ];
 		dio_int_min_ = data[ length_checked + 4 ];
 		dio_redund_const_ = data[ length_checked + 5 ];
+		DAGMaxRankIncrease_ = ( data[ length_checked + 6 ] << 8 ) | data[ length_checked + 7 ];
+
 		min_hop_rank_increase_ = ( data[ length_checked + 8 ] << 8 ) | data[ length_checked + 9 ];
 
 		imin_ = 2 << (dio_int_min_ - 1);
@@ -2305,6 +2323,9 @@ namespace wiselib
 		dio_message_->template set_payload<uint8_t>( &version_number_, 5, 1 );
 				
 		uint16_t parent_rank = ( data[6] << 8 ) | data[7];
+		if( etx_ )
+			parent_rank = parent_rank + min_hop_rank_increase_;
+		
 		parent_set_.insert( pair_t( from, parent_rank ) );
 		//First DIO, the parent is preferred						
 		preferred_parent_ = from; 
@@ -2343,7 +2364,7 @@ namespace wiselib
 				//char str[43];
 				uint8_t int_part = (rank_ >> 8);
 				uint16_t dec_part = (rank_ << 8);
-				dec_part = (rank_ >> 8);
+				dec_part = (dec_part >> 8);
 				debug().debug( "\n\n\nRPL Routing: %s, New Rank is : int part %i, dec part %i... RANK %i\n\n", my_address_.get_address(str), int_part, dec_part, rank_  );
 				#endif
 
@@ -2520,7 +2541,7 @@ namespace wiselib
 		dio_message_->template set_payload<uint8_t>( &dio_redund_const_, position + 5, 1 );
 
 		//Max Rank Increase (0 = Disabled)
-		uint16_t setter_byte_2 = 0;
+		uint16_t setter_byte_2 = DAGMaxRankIncrease_;
 		dio_message_->template set_payload<uint16_t>( &setter_byte_2, position + 6, 1 );
 
 		//Min Hop Rank Increase (256 default)
