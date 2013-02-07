@@ -110,6 +110,20 @@ namespace wiselib
 		typedef wiselib::pair<node_id_t, uint16_t> pair_t;
 		typedef typename wiselib::MapStaticVector<OsModel , node_id_t, uint16_t, 10>::iterator ParentSet_iterator;
 
+		//typedef MapStaticVector<OsModel , node_id_t, uint8_t, 10> ETXTries;
+		//typedef wiselib::pair<node_id_t, uint8_t> etx_pair_t;
+		//typedef typename wiselib::MapStaticVector<OsModel , node_id_t, uint8_t, 10>::iterator ETXTries_iterator;
+
+		typedef wiselib::pair<uint8_t, uint8_t> values_pair_t;
+
+		typedef MapStaticVector<OsModel , node_id_t, values_pair_t, 10> ETXValues;
+		typedef wiselib::pair<node_id_t, values_pair_t> etx_pair_t;
+		typedef typename wiselib::MapStaticVector<OsModel , node_id_t, values_pair_t, 10>::iterator ETXValues_iterator;
+
+		typedef MapStaticVector<OsModel , node_id_t, bool, 10> ETXReceived;
+		typedef wiselib::pair<node_id_t, bool> recv_pair_t;
+		typedef typename wiselib::MapStaticVector<OsModel , node_id_t, bool, 10>::iterator ETXReceived_iterator;
+
 		//Non-Storing Mode
 		/* 
 		typedef MapStaticVector<OsModel , node_id_t, node_id_t, 30> TransitTable; //Maintaned by the root in Non-storing mode
@@ -313,6 +327,10 @@ namespace wiselib
 	
 		void floating_timer_elapsed( void *userdata );
 
+		void ETX_timer_elapsed( void *userdata );
+
+		void trigger_ETX_computation( uint8_t *addr );
+
 		void first_dio( node_id_t from, block_data_t *data, uint16_t length );
 
 		void set_dodag_root( bool root, uint16_t ocp );
@@ -325,7 +343,9 @@ namespace wiselib
 
 		uint8_t add_hopcount_metric( bool constraint, uint8_t position );
 
-		uint16_t scan_configuration_option( block_data_t *data );
+		void scan_configuration_option( block_data_t *data, uint16_t length_checked );
+
+		void scan_prefix_information( block_data_t *data, uint16_t length_checked );
 		
 		uint8_t options_check( block_data_t *data, uint16_t length_checked, uint16_t length, node_id_t sender );
 		
@@ -399,12 +419,26 @@ namespace wiselib
 		//Don't know why the RFC specifies the rank as a fixed point number even though the fractional part is never used!?
 		//...maybe for implementations of OFs different from OF0
 		//see RFC6550 pag. 22
-		uint16_t DAGRank (uint16_t rank)
+		uint8_t DAGRank (uint16_t rank)
 		{			
 			float num = rank/min_hop_rank_increase_;
 			//
-			uint16_t int_part = (uint16_t)num;
+			uint8_t int_part = (uint8_t)num;
 			return int_part;
+		}
+
+		void increase_rank()
+		{
+			uint8_t int_part = DAGRank ( rank_ ) + (uint8_t) rank_increase_;
+			uint16_t temp = (rank_ << 8);
+			uint8_t dec_part = (temp >> 8 );
+			uint8_t temp2 = (uint8_t)((rank_increase_ - (int)rank_increase_) * 100);
+			dec_part = dec_part + temp2;
+			rank_ = (int_part << 8 ) | (dec_part);
+			#ifdef ROUTING_RPL_DEBUG
+			char str[43];
+			debug().debug( "RPLRouting: %s Increase rank: Dec part %i, Int part %i, rank_increase is %f\n", my_address_.get_address( str), int_part, dec_part, rank_increase_ );
+			#endif
 		}
 		
 		
@@ -450,7 +484,7 @@ namespace wiselib
 
 		//Uart::self_pointer_t uart_;
 
-		
+		//To update
 		enum RPLRoutingState
 		{
 			Dodag_root,
@@ -468,6 +502,9 @@ namespace wiselib
 		NeighborSet neighbor_set_;
 
 		ParentSet parent_set_; //vector of pairs <parent, rank>
+
+		ETXValues ETX_values_;
+		ETXReceived ETX_received_;
 
 		TargetSet target_set_;
 				
@@ -496,13 +533,17 @@ namespace wiselib
 
 		uint16_t step_of_rank_;
 		uint16_t rank_factor_;
-		uint16_t rank_increase_;
+		float rank_increase_;
 		uint16_t rank_stretch_;
 		uint16_t min_hop_rank_increase_;
 		uint16_t rank_;
 
 		uint8_t mop_;
 		bool mop_set_;
+
+		bool etx_;
+
+		bool prefix_present_;
 
 		uint16_t rank_preferred_parent_; //Initialize it
 		uint16_t cur_min_path_cost_; //path cost of the current preferred parent
@@ -560,13 +601,15 @@ namespace wiselib
 		typename Clock_P>
 	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
 	RPLRouting()
-		: rpl_instance_id_ (1),   
+		: rpl_instance_id_ (1),
+		etx_ (true),  
 		state_ (Unconnected),
 		dio_count_ (0),
 		dao_sequence_ (0),
 		path_sequence_ (0),
 		version_last_time_ (0),
 		change_version_ (false),
+		prefix_present_ (false),
 		count_timer_ (0),
 		mop_set_ (true),
 		step_of_rank_ (DEFAULT_STEP_OF_RANK),
@@ -708,8 +751,17 @@ namespace wiselib
 			
 			radio_ip().interface_manager_->set_prefix_for_interface( my_global_address_.addr ,0 ,64 );
 
+			prefix_present_ = true;
+
 			state_ = Dodag_root;
-			rank_ = min_hop_rank_increase_; //RFC6550 (pag.112 Section 17)
+			if( etx_ )
+			{
+				min_hop_rank_increase_ = 8; //if integral part of rank is 8 bit, then max 32 hops
+				rank_ = ( min_hop_rank_increase_ << 8 );
+			}
+			
+			else
+				rank_ = min_hop_rank_increase_; //RFC6550 (pag.112 Section 17)
 			ocp_ = ocp;
 			mop_ = 2; //Storing-mode
 			
@@ -753,10 +805,22 @@ namespace wiselib
 	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
 	start( void )
 	{
+		//NB: the set_payload function starts to fill the packet fields from the 40th byte (the ICMP header)
+		uint8_t setter_byte = RPL_CONTROL_MESSAGE;
+		dio_message_->template set_payload<uint8_t>( &setter_byte, 0, 1 );
+		dis_message_->template set_payload<uint8_t>( &setter_byte, 0, 1 );
+		dao_message_->template set_payload<uint8_t>( &setter_byte, 0, 1 );
+		setter_byte = DODAG_INF_OBJECT;
+		dio_message_->template set_payload<uint8_t>( &setter_byte, 1, 1 );
+		setter_byte = DODAG_INF_SOLICIT;
+		dis_message_->template set_payload<uint8_t>( &setter_byte, 1, 1 );
+		setter_byte = DEST_ADVERT_OBJECT;
+		dao_message_->template set_payload<uint8_t>( &setter_byte, 1, 1 );
+
 		//set timer in order for nodes to wait ND to configure their gloabal addresses
 		//Increase the timer delay if ND is used
 		//Perhaps I don't need to delay the start... think about it
-		timer().template set_timer<self_type, &self_type::start2>( 1000, this, 0 );
+		timer().template set_timer<self_type, &self_type::start2>( 4000, this, 0 );
 		
 		return SUCCESS;
 	}
@@ -785,33 +849,7 @@ namespace wiselib
 		#endif
 		*/
 
-		/*
-		for (NeighborSet_iterator it = neighbor_set_.begin(); it != neighbor_set_.end(); it++) 
-		{
-			node_id_t node = it->first;
-			uint8_t value = it->second;
-			#ifdef ROUTING_RPL_DEBUG
-			char str[43];
-			debug().debug( "\nRPLRouting: Neighbor: %s is %i \n", node.get_address(str), value );
-			#endif
-     		}
-		*/		
-				
-			
-		//NB: the set_payload function starts to fill the packet fields from the 40th byte (the ICMP header)
-		uint8_t setter_byte = RPL_CONTROL_MESSAGE;
-		dio_message_->template set_payload<uint8_t>( &setter_byte, 0, 1 );
-		dis_message_->template set_payload<uint8_t>( &setter_byte, 0, 1 );
-		dao_message_->template set_payload<uint8_t>( &setter_byte, 0, 1 );
-		setter_byte = DODAG_INF_OBJECT;
-		dio_message_->template set_payload<uint8_t>( &setter_byte, 1, 1 );
-		setter_byte = DODAG_INF_SOLICIT;
-		dis_message_->template set_payload<uint8_t>( &setter_byte, 1, 1 );
-		setter_byte = DEST_ADVERT_OBJECT;
-		dao_message_->template set_payload<uint8_t>( &setter_byte, 1, 1 );
-
-		
-		
+							
 		if ( state_ == Dodag_root )
 		{		
 			//block_data_t* data = dio_message_->payload();	
@@ -834,7 +872,7 @@ namespace wiselib
 			dio_current_position = add_prefix_information ( dio_current_position );
 				
 			//For now just 1 more OF.. to add more
-			if (ocp_ != 0)
+			if (ocp_ != 0 && !etx_ )
 			{
 				//-----------------------------FILLING THE OPTIONS-----------------------------------------
 
@@ -848,6 +886,9 @@ namespace wiselib
 			//------------------------------------------------------------------------------------------
 			//setting the total length of the payload
 			
+			#ifdef ROUTING_RPL_DEBUG
+			debug().debug( "\n\n\nRPL Routing:Setting length %i, should be 76\n\n", dio_current_position );
+			#endif
 			dio_message_->set_transport_length( dio_current_position ); 
 			
 			//initialize timers
@@ -877,11 +918,11 @@ namespace wiselib
 			dodag_id_ = Radio_IP::NULL_NODE_ID;
 			preferred_parent_ = Radio_IP::NULL_NODE_ID;
 			
-			setter_byte = 0;
+			uint8_t setter_byte = 0;
 			dis_message_->template set_payload<uint8_t>( &setter_byte, 4, 1 );
 			dis_message_->template set_payload<uint8_t>( &setter_byte, 5, 1 );
 			dis_message_->set_transport_length( 6 );
-			timer().template set_timer<self_type, &self_type::dis_delay>( 5000, this, 0 );	
+			timer().template set_timer<self_type, &self_type::dis_delay>( 6000, this, 0 );	
 			#ifdef ROUTING_RPL_DEBUG
 			char str[43];
 			debug().debug( "RPLRouting: %s Start as ordinary node\n", my_address_.get_address(str) );
@@ -1020,12 +1061,12 @@ namespace wiselib
 		IPv6Packet_t* message = packet_pool_mgr_->get_packet_pointer( len );
 		
 		message->set_destination_address(destination);
+		data = message->payload();
 				
 		uint8_t result = radio_ip().send( destination, len, data );
 		
 		if( result != ROUTING_CALLED )
 			packet_pool_mgr_->clean_packet( message );
-		
 		return result;
 	}
 
@@ -1068,18 +1109,19 @@ namespace wiselib
 			{
 				#ifdef ROUTING_RPL_DEBUG
 				char str[43];
-				debug().debug( "\nRPLRouting: This node %s seems isolated\n", my_address_.get_address(str) );
+				char str2[43];
+				debug().debug( "\nRPLRouting: This node %s seems isolated, try to send a Solicitation to neighbor %s\n", my_address_.get_address(str), dest.get_address(str2) );
 				#endif
 				send_dis( dest, dis_reference_number_, NULL );
 				//This timer depends on the size of the network
-				timer().template set_timer<self_type, &self_type::floating_timer_elapsed>( 15000, this, 0 );
+				timer().template set_timer<self_type, &self_type::floating_timer_elapsed>( 3000, this, 0 );
 			
 			}
 			else
 			{
 				#ifdef ROUTING_RPL_DEBUG
 				char str[43];
-				debug().debug( "RPLRouting: This node %s seems isolated\n", my_address_.get_address(str) );
+				debug().debug( "RPLRouting: This node %s seems isolated, find neighbors again\n", my_address_.get_address(str) );
 				#endif
 				find_neighbors();
 				start();
@@ -1150,7 +1192,7 @@ namespace wiselib
 		//A sort of ND compliant with RPL
 		if (count_timer_ >= 20)
 		{
-			find_neighbors();
+			//find_neighbors();  //To Update
 			count_timer_ = 0;
 		}
 		count_timer_ = count_timer_ + 1;
@@ -1185,8 +1227,6 @@ namespace wiselib
 	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
 	floating_timer_elapsed( void* userdata )
 	{
-		
-		
 		//Before creating a Floating DODAG there's the need to understand how long it takes for a DIO to reach all the network
 		if ( state_ == Unconnected )
 		{
@@ -1240,6 +1280,47 @@ namespace wiselib
 		
 	}
 	
+	// -----------------------------------------------------------------------
+	
+	template<typename OsModel_P,
+		typename Radio_IP_P,
+		typename Radio_P,
+		typename Debug_P,
+		typename Timer_P,
+		typename Clock_P>
+	void
+	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
+	ETX_timer_elapsed( void *userdata )
+	{
+		uint8_t addr[16];
+
+		//debug().debug( "\nDATA %d \n", ((uint8_t*)userdata)[0] );
+
+		memcpy(addr, (uint8_t*)(userdata) ,16);
+		
+		node_id_t neigh;
+		neigh.set_address(addr);
+
+		#ifdef ROUTING_RPL_DEBUG
+		char str[43];
+		char str2[43];
+		debug().debug( "\nRPL Routing: %s. ETX timer expired for receiver %s\n", my_address_.get_address(str), neigh.get_address(str2) );
+		#endif
+		
+		NeighborSet_iterator it = neighbor_set_.find( neigh );
+		
+		//....
+		if( it->second != 10 )
+		{
+			#ifdef ROUTING_RPL_DEBUG
+			//char str3[43];
+			//char str4[43];
+			debug().debug( "\nRPL Routing: ETX computation again. Node %s, Neighbor %s\n", my_address_.get_address(str), neigh.get_address(str2) );
+			#endif
+			trigger_ETX_computation( it->first.addr );
+		}
+	}
+
 	// -----------------------------------------------------------------------
 	template<typename OsModel_P,
 		typename Radio_IP_P,
@@ -1319,37 +1400,86 @@ namespace wiselib
 			uint8_t neigh_msg_type = data[4];
 			if ( neigh_msg_type == 1 )
 			{
+				//now send ETX request
+				
 				neighbor_set_.erase( sender );
 				neighbor_set_.insert( neigh_pair_t( sender, 5 ) );
-				//now send the response
 				
-				//uint8_t num = packet_pool_mgr_->get_unused_packet_with_number();
-				//IPv6Packet_t* resp = packet_pool_mgr_->get_packet_pointer( num );
-					
-				uint8_t setter_byte = RPL_CONTROL_MESSAGE;
-				message->template set_payload<uint8_t>( &setter_byte, 0, 1 ); 
-					
-				setter_byte = OTHERWISE;
-				message->template set_payload<uint8_t>( &setter_byte, 1, 1 );
-		
-				setter_byte = 2; //1 for 1st BROADCAST, 2 For Response UNICAST
-				message->template set_payload<uint8_t>( &setter_byte, 4, 1 );
+				trigger_ETX_computation( neighbor_set_.find( sender)->first.addr );
 
-				message->set_source_address(my_address_);
-				
-				//resp->set_transport_length( 5 );
-								
-				send( sender, packet_number, NULL );
-				
-				
+				packet_pool_mgr_->clean_packet( message );
+						
 			}
-			else
+			else if( neigh_msg_type == 2 )
 			{
-				//Node is reachable (10)
+
+				#ifdef ROUTING_RPL_DEBUG
+				debug().debug( "\nRPL Routing: I'm %s, ETX Request received from %s\n", my_address_.get_address(str), sender.get_address(str2) );
+				#endif
+				//ETX request received 
+				//No need timer, the sender will send a message again if it doesn't receive my response
+				uint8_t forward = 1;
+			
+				uint8_t reverse;
+				
+				ETXValues_iterator it = ETX_values_.find( sender );
+				if( it != ETX_values_.end() )
+				{
+					//values_pair_t prova = it->second;
+					//forward = it->second->first;
+					forward = it->second.first;
+					//ETX_values_.erase( sender );
+				}
+
+				ETXReceived_iterator it_recv = ETX_received_.find( sender );
+				if( !( it_recv != ETX_received_.end() && it_recv->second ) )
+					reverse = data[5];
+				else
+					reverse = it->second.second;
+
+				ETX_values_.erase( sender );
+				
+				ETX_values_.insert( etx_pair_t ( sender, values_pair_t( forward, reverse ) ) );
+				ETX_received_.insert( recv_pair_t (sender, true ) );
+				
+				message->set_source_address(my_address_);
+						
+				uint8_t setter_byte = 3;
+				message->template set_payload<uint8_t>( &setter_byte, 4, 1 );
+				
+				//In this way I ack the 'forward value' of node 'sender' toward me: My reverse is the forward for the sender
+				message->template set_payload<uint8_t>( &reverse, 5, 1 );
+				send( sender, packet_number, NULL );
+			}
+			else if( neigh_msg_type == 3 )
+			{
+				//ETX Responses (ACKs), confirmation of the forward value
+				//Node is reachable (10)...
+				//...this data structure is also used to verify whether the ETX ACK has been received (sse timer)
+
+				#ifdef ROUTING_RPL_DEBUG
+				debug().debug( "\nRPL Routing: I'm %s, Node %s confirm my forward \n", my_address_.get_address(str), sender.get_address(str2) );
+				#endif
+				uint8_t forward = 1;
+				uint8_t reverse = 1;
+
 				neighbor_set_.erase( sender );
 				neighbor_set_.insert( neigh_pair_t( sender, 10 ) );
+				ETXValues_iterator it = ETX_values_.find( sender );
+				if( it != ETX_values_.end() )
+				{
+					//the else is not possible since the entry is added before sending neigh_message_type = 2
+					forward = data[5];
+					reverse = it->second.second;
+					ETX_values_.erase( sender );
+				}
+			
+				ETX_values_.insert( etx_pair_t ( sender, values_pair_t( forward, reverse ) ) );
 				
+				packet_pool_mgr_->clean_packet( message );
+			
 			}
+			
 			return;
 		}
 		
@@ -1428,7 +1558,7 @@ namespace wiselib
 			
 				if( version_number_ != data[5] )
 				{
-					if( version_number > data[5] )
+					if( version_number_ > data[5] )
 					{
 						//The received DIO represents an older version => ignore the message
 						packet_pool_mgr_->clean_packet( message );
@@ -1785,57 +1915,71 @@ namespace wiselib
 		#endif
 		*/
 		
-		//DODAG_CONFIGURATION_OPTION it is always the first option (if present)
+		//DODAG_CONFIGURATION_OPTION is always the first option (if present)
 		
 		// THIS is to be used if the DODAG_CONFIGURATION_OPTION DO NOT HAVE TO BE PRESENT AS FIRST OPTION
 		uint8_t option_type = data[28]; 
 		uint8_t option_length = data[ 29 ];
-		uint16_t length_checked = 28 + 2 + option_length;
+		uint16_t length_checked = 28; //starting point of options
 		
 		//Don't really need to scan all..Actually the DODAG_CONFIGURATION_OPTION is the first option for the sake of simplicity
-		while( option_type != DODAG_CONFIGURATION )
+		
+		//while( option_type != DODAG_CONFIGURATION )
+		//while( option_type != PREFIX_INFORMATION )
+		//bool prefix_present = false;		
+					
+		bool config_present = false;
+		while( length > length_checked )
 		{
-			if ( length > length_checked )
-			{
-				option_type = data[ length_checked ];
-				option_length = data[ length_checked + 1 ];
-				length_checked = length_checked + 2 + option_length;
-			}
-			else
-			{
-				#ifdef ROUTING_RPL_DEBUG
-				debug().debug( "\nRPL Routing: DIO Message doesn't contain DODAG_CONFIGURATION_OPTION.\n" );
-				#endif
-				return;
-			}
+			if( option_type == PREFIX_INFORMATION )
+				prefix_present_ = true;
+			else if( option_type == DODAG_CONFIGURATION )
+				config_present = true;
+			
+			length_checked = length_checked + 2 + option_length;
+			option_type = data[ length_checked ];
+			option_length = data[ length_checked + 1 ];
+			
+		}
+
+		if( !(config_present && prefix_present_) )
+		{
+			#ifdef ROUTING_RPL_DEBUG
+			debug().debug( "\nRPL Routing: First DIO Message doesn't contain DODAG_CONFIGURATION_OPTION or PREFIX_INFORMATION.\n" );
+			#endif
+			return;
 		}
 		
-		// now check bidirectionality????
+		// now check bidirectionality
 		if ( scan_neighbor( from ) == 0 )
+		{
+			#ifdef ROUTING_RPL_DEBUG
+			debug().debug( "\nRPL Routing: NEIGHBOR %s unreachable.\n", from.get_address(str) );
+			#endif
 			return;
+		}
 				
-		//Now, since the CONFIGURATION_OPTION IS PRESENT I CAN START SCANNING ALL THE OPTIONS		
+		//Now, since the CONFIGURATION_OPTION and PREFIX INFORMATION ARE PRESENT I CAN START SCANNING ALL THE OPTIONS		
 		//TO DO!!!!!!!	if else ( RIO )
-		
-		ocp_ = scan_configuration_option( data ); 
 
-		length_checked = 44; // + 2 + option_length;
+		length_checked = 28; 
 		
 		uint8_t ret = 2;
 		
-		//options_check may contain a PIO!!		
-		//process options only if they are present (i.e. length > length_checked )
-		if( length > length_checked )
-			ret = options_check( data, length_checked, length, from );
+		ret = options_check( data, length_checked, length, from );
 		
 		//retOF = 0 means  that the node who sent the message can't satisfy the Objective Function Constraints (it can't be a router)
 		//...then this node remains Unconnected (or in the transient state 'Connected')
 		//retOF = 1 means that the current node is a Leaf, it must not send dio_messages..
 		
 		if (ret <= 1 )
+		{
+			#ifdef ROUTING_RPL_DEBUG
+			debug().debug( "\nRPL Routing:RETURN BEFORE BEING CONNECTED.\n" );
+			#endif
 			return;
+		}
 		#ifdef ROUTING_RPL_DEBUG
-	
 		debug().debug( "\nRPLRouting: CONNECTED \n" );
 		#endif
 		state_ = Connected;
@@ -1847,26 +1991,25 @@ namespace wiselib
 		//Fill the RT
 		Forwarding_table_value entry( from, 0, 0, 0 );
 		
+		//Or Null_node_id instead of dodag_id??? Already done in set_firsts_dio_fields, is this necessary?
 		radio_ip().routing_.forwarding_table_.insert( ft_pair_t( dodag_id_, entry ) );
-		
-		//radio_ip().routing_.print_forwarding_table();
-
-		//Now send DAO to the parent if mop = 2, to the root if mop = 1		
-		//Note that in non-storing mode the root is the only entry in the RT of ordinary nodes
+	
 		//In storing mode ipv6 source and destination addresses inside a DAO must be link-local
 					
 		//WHEN READY TO AGGREGATE USE DAO TIMER!
-		if ( mop_ != 0 )
+				
+		//if( mop_ == 1 )
+			//send_dao( dodag_id_, dao_reference_number_, NULL );
+			//unicast dao and start timer counting the number of transmission
+		
+		//I have to send DAOs only after having computed the ETX value
+		if( mop_ == 2 )
 		{
 			uint8_t dao_length;
 			dao_length = prepare_dao();
 			dao_message_->set_transport_length( dao_length );
-		}
-
-		if( mop_ == 1 )
-			send_dao( dodag_id_, dao_reference_number_, NULL );
-		else if( mop_ == 2 )
 			send_dao( preferred_parent_, dao_reference_number_, NULL );
+		}
 		
 		//THE DIO MESSAGE LENGTH HAS TO BE SET HERE
 		dio_message_->set_transport_length( length );
@@ -1880,143 +2023,20 @@ namespace wiselib
 		set_current_interval(0);
 		compute_sending_threshold();
 
+		
 		#ifdef ROUTING_RPL_DEBUG
 		debug().debug( "\n\n\nRPL Routing: Node %s is starting the timers\n\n", my_address_.get_address(str) );
 		#endif
 		
+
 		//timer after which I must to double the timer value (if I don't detect inconsistencies)
 		timer().template set_timer<self_type, &self_type::timer_elapsed>( current_interval_, this, 0 );
 
 		//timer after which I need to send the DIO message
-		timer().template set_timer<self_type, &self_type::threshold_timer_elapsed>( sending_threshold_, this, 0 );	
+		timer().template set_timer<self_type, &self_type::threshold_timer_elapsed>( sending_threshold_, this, 0 );
 		
 	}
 	
-	// -----------------------------------------------------------------------
-	
-	template<typename OsModel_P,
-		typename Radio_IP_P,
-		typename Radio_P,
-		typename Debug_P,
-		typename Timer_P,
-		typename Clock_P>
-	uint16_t
-	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
-	scan_configuration_option( block_data_t *data )
-	{
-		uint8_t option_type = data[ 28 ];
-		uint8_t option_length = data[ 29 ];
-		uint16_t length_checked = 28; 
-		
-		
-		#ifdef ROUTING_RPL_DEBUG
-		debug().debug( "\nRPL Routing: Scanning DODAG_CONFIGURATION_OPTION!\n" );
-		#endif
-
-		imax_ = data[ 28 + 3 ];
-		dio_int_min_ = data[ 28 + 4 ];
-		dio_redund_const_ = data[ 28 + 5 ];
-		min_hop_rank_increase_ = ( data[ 28 + 8 ] << 8 ) | data[ 28 + 9 ];
-
-		imin_ = 2 << (dio_int_min_ - 1);
-		max_interval_ = (2 << (imax_ - 1)) *imin_;
-				
-		//Other fields?
-		uint16_t current_ocp = ( data[ 28 + 10 ] << 8 ) | data[ 28 + 11 ];
-		
-		dio_message_->template set_payload<uint8_t>( &option_type, 28, 1 );
-	
-		//Option Length
-		dio_message_->template set_payload<uint8_t>( &option_length, 28 + 1, 1 );
-
-		for (int i = 0; i < option_length; i++ )
-		{
-			uint8_t setter_byte = data[ length_checked + i + 2 ];
-			dio_message_->template set_payload<uint8_t>( &setter_byte, length_checked + i + 2, 1 );
-		}
-			
-		return current_ocp;
-		
-		
-	}
-		
-	// -----------------------------------------------------------------------
-	
-	template<typename OsModel_P,
-		typename Radio_IP_P,
-		typename Radio_P,
-		typename Debug_P,
-		typename Timer_P,
-		typename Clock_P>
-	void
-	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
-	set_firsts_dio_fields( node_id_t from, block_data_t *data )
-	{		
-		
-		//If This is a new version, should I maintain the old parents related to older versions? TO UNDERSTAND
-		parent_set_.clear(); 
-		dio_count_ = dio_count_ + 1; 
-		rpl_instance_id_ = data[4];
-		version_number_ = data[5];
-	
-		//update the Rank and set the other fields learned from the root
-		dio_message_->template set_payload<uint8_t>( &rpl_instance_id_, 4, 1 );
-		dio_message_->template set_payload<uint8_t>( &version_number_, 5, 1 );
-				
-		uint16_t parent_rank = ( data[6] << 8 ) | data[7];
-		parent_set_.insert( pair_t( from, parent_rank ) );
-		//First DIO, the parent is preferred						
-		preferred_parent_ = from; 
-		rank_preferred_parent_ = parent_rank;
-
-		//ADD default route
-		Forwarding_table_value entry( preferred_parent_, 0, 0, 0 );
-		
-		radio_ip().routing_.forwarding_table_.insert( ft_pair_t( Radio_IP::NULL_NODE_ID, entry ) );
-		
-		//step_of_rank depends on the metric! (updated when scanning Dag Metric Container, see obove)		
-		if (ocp_ == 0 )
-			rank_increase_ = ((rank_factor_ * step_of_rank_) + rank_stretch_ ) * min_hop_rank_increase_;
-		else
-			rank_increase_ = step_of_rank_ * min_hop_rank_increase_; //Understand it better (out of scope, up to me)
-
-		rank_ = rank_preferred_parent_ + rank_increase_;
-	
-		dio_message_->template set_payload<uint16_t>( &rank_, 6, 1 );
-	
-		//1(grounded, 0 for Floating DODAGs) 0(predefined) 000(MOP: no downward routes) 000(default prf) = 2^7 = 128
-		uint8_t setter_byte = data[8];
-		dio_message_->template set_payload<uint8_t>( &setter_byte, 8, 1 );
-		setter_byte = data[9];
-		//DTSN (used to maintain Downward routes) 
-		dio_message_->template set_payload<uint8_t>( &setter_byte, 9, 1 );
-		//Flags and Reserved fields 0 by default
-		setter_byte = data[10];
-		dio_message_->template set_payload<uint8_t>( &setter_byte, 10, 1 );
-		setter_byte = data[11];
-		dio_message_->template set_payload<uint8_t>( &setter_byte, 11, 1 );
-		
-		uint8_t addr[16];
-		memcpy(addr, data + 12 ,16);
-		//This address needs to be rearranged before setting it
-		uint8_t k = 0;
-		for( uint8_t i = 15; i>7; i--)
-		{
-			uint8_t temp;
-			temp = addr[i];
-			addr[i] = addr[k];
-			addr[k] = temp;
-			k++;
-		}
-		
-		dodag_id_.set_address(addr);
-		
-		dio_message_->template set_payload<uint8_t[16]>( &dodag_id_.addr, 12, 1 ); //CON 1 alla fine funziona
-		
-				
-		
-	}
-
 	// -----------------------------------------------------------------------
 	
 	template<typename OsModel_P,
@@ -2037,38 +2057,17 @@ namespace wiselib
 		bool constraint = false;
 		bool satisfied = false;
 
+		uint8_t return_value = 3;
+
 		while ( length > length_checked )
 		{
-			if( option_type == PREFIX_INFORMATION )
+			if( option_type == DODAG_CONFIGURATION )
 			{
-				uint8_t prefix_len = data[ length_checked + 2 ];
-				uint8_t flags = data[ length_checked + 3 ];
-				uint8_t on_link = (flags >> 7);	
-				uint8_t aut = (flags << 1);
-				aut = (flags >> 7);			
-				bool onlink_flag;
-				if( on_link == 1 )
-					onlink_flag = true;
-				else
-					onlink_flag = false;
-		
-				bool antonomous_flag;
-				if( aut == 1 )
-					antonomous_flag = true;
-				else
-					antonomous_flag = false;
-		
-				//
-				uint32_t valid_lifetime = ( data[ length_checked + 4 ] << 24 ) | ( data[ length_checked + 5 ] << 16 ) | ( data[ length_checked + 6 ] << 8 ) | data[ length_checked + 7 ];
-						
-				//
-				uint32_t prefered_lifetime = (  data[ length_checked + 8 ] << 24 ) | (  data[ length_checked + 9 ] << 16 ) | (  data[ length_checked + 10 ] << 8 ) | data[ length_checked + 11 ];
-						
-				radio_ip().interface_manager_->set_prefix_for_interface( data + length_checked + 16, Radio_IP::INTERFACE_RADIO, prefix_len, valid_lifetime, onlink_flag, prefered_lifetime, antonomous_flag );
-				
-				if( state_ != Dodag_root )
-					my_global_address_ = radio_ip().global_id();
-				
+				scan_configuration_option( data, length_checked );
+			}
+			else if( option_type == PREFIX_INFORMATION )
+			{
+				scan_prefix_information( data, length_checked );
 			}
 
 			//A Metric Constraint is used to prune the tree:...
@@ -2110,7 +2109,7 @@ namespace wiselib
 								if ( hop == hop_limit_ )
 								{
 									state_ = Leaf;
-									return 1;
+									return_value = 1;
 								}
 							}
 							else    
@@ -2119,7 +2118,7 @@ namespace wiselib
 								debug().debug( "\nRPL Routing: This is not a candidate parent!\n" );
 								#endif
 								
-								return 0;
+								return_value = 0;
 							}
 						}
 					
@@ -2175,6 +2174,7 @@ namespace wiselib
 					dio_message_->template set_payload<uint8_t>( &setter_byte, length_checked + i + 2, 1 );
 				}
 			}
+		
 
 			length_checked = length_checked + 2 + option_length;
 			option_type = data[ length_checked ];
@@ -2188,7 +2188,208 @@ namespace wiselib
 			return 2;
 		}
 		
-		return 3;
+		return return_value;
+	}
+
+	// -----------------------------------------------------------------------
+	
+	template<typename OsModel_P,
+		typename Radio_IP_P,
+		typename Radio_P,
+		typename Debug_P,
+		typename Timer_P,
+		typename Clock_P>
+	void
+	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
+	scan_configuration_option( block_data_t *data, uint16_t length_checked )
+	{
+		uint8_t option_type = data[ length_checked ];
+		uint8_t option_length = data[ length_checked + 1 ];
+		//uint16_t length_checked = 28; 
+		
+		
+		#ifdef ROUTING_RPL_DEBUG
+		debug().debug( "\nRPL Routing: Scanning DODAG_CONFIGURATION_OPTION!\n" );
+		#endif
+
+		imax_ = data[ length_checked + 3 ];
+		dio_int_min_ = data[ length_checked + 4 ];
+		dio_redund_const_ = data[ length_checked + 5 ];
+		min_hop_rank_increase_ = ( data[ length_checked + 8 ] << 8 ) | data[ length_checked + 9 ];
+
+		imin_ = 2 << (dio_int_min_ - 1);
+		max_interval_ = (2 << (imax_ - 1)) *imin_;
+				
+		//Other fields?
+		ocp_ = ( data[ length_checked + 10 ] << 8 ) | data[ length_checked + 11 ];
+		
+		//dio_message_->template set_payload<uint8_t>( &option_type, length_checked, 1 );
+	
+		//Option Length
+		//dio_message_->template set_payload<uint8_t>( &option_length, length_checked + 1, 1 );
+
+		/*
+		for (int i = 0; i < option_length; i++ )
+		{
+			uint8_t setter_byte = data[ length_checked + i + 2 ];
+			dio_message_->template set_payload<uint8_t>( &setter_byte, length_checked + i + 2, 1 );
+		}
+		*/
+		//return current_ocp;
+		
+		
+	}
+
+	// -----------------------------------------------------------------------
+	
+	template<typename OsModel_P,
+		typename Radio_IP_P,
+		typename Radio_P,
+		typename Debug_P,
+		typename Timer_P,
+		typename Clock_P>
+	void
+	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
+	scan_prefix_information( block_data_t *data, uint16_t length_checked )
+	{
+		uint8_t prefix_len = data[ length_checked + 2 ];
+		uint8_t flags = data[ length_checked + 3 ];
+		uint8_t on_link = (flags >> 7);	
+		uint8_t aut = (flags << 1);
+		aut = (flags >> 7);			
+		bool onlink_flag;
+		if( on_link == 1 )
+			onlink_flag = true;
+		else
+			onlink_flag = false;
+	
+		bool antonomous_flag;
+		if( aut == 1 )
+			antonomous_flag = true;
+		else
+			antonomous_flag = false;
+		
+		//
+		uint32_t valid_lifetime = ( data[ length_checked + 4 ] << 24 ) | ( data[ length_checked + 5 ] << 16 ) | ( data[ length_checked + 6 ] << 8 ) | data[ length_checked + 7 ];
+						
+		//
+		uint32_t prefered_lifetime = (  data[ length_checked + 8 ] << 24 ) | (  data[ length_checked + 9 ] << 16 ) | (  data[ length_checked + 10 ] << 8 ) | data[ length_checked + 11 ];
+						
+		radio_ip().interface_manager_->set_prefix_for_interface( data + length_checked + 16, Radio_IP::INTERFACE_RADIO, prefix_len, valid_lifetime, onlink_flag, prefered_lifetime, antonomous_flag );
+				
+		if( state_ != Dodag_root )
+			my_global_address_ = radio_ip().global_id();
+	}
+
+	// -----------------------------------------------------------------------
+	
+	template<typename OsModel_P,
+		typename Radio_IP_P,
+		typename Radio_P,
+		typename Debug_P,
+		typename Timer_P,
+		typename Clock_P>
+	void
+	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
+	set_firsts_dio_fields( node_id_t from, block_data_t *data )
+	{		
+		
+		//If This is a new version, should I maintain the old parents related to older versions? TO UNDERSTAND
+		parent_set_.clear(); 
+		dio_count_ = dio_count_ + 1; 
+		rpl_instance_id_ = data[4];
+		version_number_ = data[5];
+	
+		//update the Rank and set the other fields learned from the root
+		dio_message_->template set_payload<uint8_t>( &rpl_instance_id_, 4, 1 );
+		dio_message_->template set_payload<uint8_t>( &version_number_, 5, 1 );
+				
+		uint16_t parent_rank = ( data[6] << 8 ) | data[7];
+		parent_set_.insert( pair_t( from, parent_rank ) );
+		//First DIO, the parent is preferred						
+		preferred_parent_ = from; 
+		rank_preferred_parent_ = parent_rank;
+
+		//ADD default route
+		Forwarding_table_value entry( preferred_parent_, 0, 0, 0 );
+		
+		radio_ip().routing_.forwarding_table_.insert( ft_pair_t( Radio_IP::NULL_NODE_ID, entry ) );
+		
+		//step_of_rank depends on the metric! (updated when scanning Dag Metric Container, see obove)		
+		if (ocp_ == 0 )
+		{
+			rank_increase_ = ((rank_factor_ * step_of_rank_) + rank_stretch_ ) * min_hop_rank_increase_;
+			rank_ = rank_preferred_parent_ + rank_increase_;
+		}
+		else
+		{
+			if( etx_ )
+			{
+				
+				ETXValues_iterator it = ETX_values_.find( preferred_parent_ );
+				float forward = 1/(it->second.first);
+				float reverse = 1/(it->second.second);
+				rank_increase_ = 1/(forward * reverse);
+
+				#ifdef ROUTING_RPL_DEBUG
+				char str[43];
+				
+				debug().debug( "\n\n\nRPL Routing: %s, Rank Increase is %f, forward %f, reverse %f\n\n", my_address_.get_address(str), rank_increase_, forward, reverse );
+				#endif
+			
+				increase_rank();
+			
+				#ifdef ROUTING_RPL_DEBUG
+				//char str[43];
+				uint8_t int_part = (rank_ >> 8);
+				uint16_t dec_part = (rank_ << 8);
+				dec_part = (rank_ >> 8);
+				debug().debug( "\n\n\nRPL Routing: %s, New Rank is : int part %i, dec part %i... RANK %i\n\n", my_address_.get_address(str), int_part, dec_part, rank_  );
+				#endif
+
+			}
+			else
+			{
+				rank_increase_ = step_of_rank_ * min_hop_rank_increase_; //Understand it better (out of scope, up to me)
+				rank_ = rank_preferred_parent_ + rank_increase_;
+			}
+		}	
+
+		
+	
+		dio_message_->template set_payload<uint16_t>( &rank_, 6, 1 );
+	
+		//1(grounded, 0 for Floating DODAGs) 0(predefined) 000(MOP: no downward routes) 000(default prf) = 2^7 = 128
+		uint8_t setter_byte = data[8];
+		dio_message_->template set_payload<uint8_t>( &setter_byte, 8, 1 );
+		setter_byte = data[9];
+		//DTSN (used to maintain Downward routes) 
+		dio_message_->template set_payload<uint8_t>( &setter_byte, 9, 1 );
+		//Flags and Reserved fields 0 by default
+		setter_byte = data[10];
+		dio_message_->template set_payload<uint8_t>( &setter_byte, 10, 1 );
+		setter_byte = data[11];
+		dio_message_->template set_payload<uint8_t>( &setter_byte, 11, 1 );
+		
+		uint8_t addr[16];
+		memcpy(addr, data + 12 ,16);
+		//This address needs to be rearranged before setting it
+		uint8_t k = 0;
+		for( uint8_t i = 15; i>7; i--)
+		{
+			uint8_t temp;
+			temp = addr[i];
+			addr[i] = addr[k];
+			addr[k] = temp;
+			k++;
+		}
+		
+		dodag_id_.set_address(addr);
+		
+		dio_message_->template set_payload<uint8_t[16]>( &dodag_id_.addr, 12, 1 ); //CON 1 alla fine funziona
+		
+				
+		
 	}
 
 	// -----------------------------------------------------------------------
@@ -2365,14 +2566,95 @@ namespace wiselib
 			// For now at least it's a candidate neighbor, then add it without bidirectionality
 			//IDEA: check neighbors each time the timer elapses, or after some timer expiration!
 			neighbor_set_.insert ( neigh_pair_t ( from, 5 ) );
+			#ifdef ROUTING_RPL_DEBUG
+			debug().debug( "\nRPL Routing: NEIGHBOR IS 5 RIGHT NOW\n" );
+			#endif
 			return 0;
 		}
 			
 		uint8_t bid = it->second;
 		if ( bid == 5 )
+		{
+			#ifdef ROUTING_RPL_DEBUG
+			debug().debug( "\nRPL Routing: NEIGHBOR IS 5\n" );
+			#endif
 			return 0;
+		}
 		return 1; //OK
 			
+	}
+
+	// -----------------------------------------------------------------------
+	
+	template<typename OsModel_P,
+		typename Radio_IP_P,
+		typename Radio_P,
+		typename Debug_P,
+		typename Timer_P,
+		typename Clock_P>
+	void
+	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
+	trigger_ETX_computation( uint8_t *addr )
+	{
+		uint8_t forward = 1;
+		uint8_t reverse = 1;
+		
+		node_id_t node;
+		uint8_t node_addr[16];
+		memcpy( node_addr, addr, 16 );
+		node.set_address( node_addr );
+		ETXValues_iterator it = ETX_values_.find( node );
+		if( it != ETX_values_.end() )		
+		{
+			it->second.first = it->second.first + 1;
+			forward = it->second.first;
+			reverse = it->second.second;
+			ETX_values_.erase( node );
+		}
+		ETX_values_.insert ( etx_pair_t ( node, values_pair_t( forward, reverse ) ) );
+
+		#ifdef ROUTING_RPL_DEBUG
+		char str[43];
+		char str2[43];
+		//debug().debug( "\nRPLRouting: Node: %s is computing ETX for parent %s \n", my_address_.get_address(str), parent.get_address( str2 ));
+		#endif
+		uint8_t num = packet_pool_mgr_->get_unused_packet_with_number();
+		IPv6Packet_t* message = packet_pool_mgr_->get_packet_pointer( num );
+		
+		if( num == Packet_Pool_Mgr_t::NO_FREE_PACKET )
+			return;			
+
+		
+		uint8_t setter_byte = RPL_CONTROL_MESSAGE;
+		message->template set_payload<uint8_t>( &setter_byte, 0, 1 ); 
+		
+		setter_byte = OTHERWISE;
+		message->template set_payload<uint8_t>( &setter_byte, 1, 1 );
+
+		setter_byte = 2; //1 for 1st BROADCAST, 2 For ETX computation, 3 for ETX computation response
+		message->template set_payload<uint8_t>( &setter_byte, 4, 1 );
+		
+		message->template set_payload<uint8_t>( &forward, 5, 1 );
+		
+
+		message->set_transport_length( 6 ); 
+		
+		message->set_transport_next_header( Radio_IP::ICMPV6 );
+		message->set_hop_limit(255);
+				
+		message->set_source_address(my_address_);
+
+		message->set_flow_label(0);
+		message->set_traffic_class(0);
+
+		send( node, num, NULL );
+
+		#ifdef ROUTING_RPL_DEBUG
+		//char str[43];
+		//debug().debug( "\nRPLRouting: Node: %s FIRST BYTE %d \n", my_address_.get_address(str), *(node.addr));
+		#endif
+		//the timer must be greater than the RTT
+		timer().template set_timer<self_type, &self_type::ETX_timer_elapsed>( 1500, this, addr );
 	}
 
 	// -----------------------------------------------------------------------
@@ -2405,10 +2687,10 @@ namespace wiselib
 		setter_byte = OTHERWISE;
 		message->template set_payload<uint8_t>( &setter_byte, 1, 1 );
 
-		setter_byte = 1; //1 for 1st BROADCAST, 2 For Response
+		setter_byte = 1; //1 for 1st BROADCAST, 2 For Unicast ETX request, 3 for Unicast ETX response
 		message->template set_payload<uint8_t>( &setter_byte, 4, 1 );
 
-		message->set_transport_length( 5 ); 
+		message->set_transport_length( 7 ); 
 		
 		message->set_transport_next_header( Radio_IP::ICMPV6 );
 		message->set_hop_limit(255);
@@ -2512,6 +2794,10 @@ namespace wiselib
 	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
 	add_prefix_information( uint8_t position )
 	{
+		#ifdef ROUTING_RPL_DEBUG
+		debug().debug( "\n\n\nRPL Routing:ADDING prefix information at position %i, should be 44\n\n", position );
+		#endif
+		
 		//set the type
 		uint8_t setter_byte = PREFIX_INFORMATION;
 		dio_message_->template set_payload<uint8_t>( &setter_byte, position, 1);
