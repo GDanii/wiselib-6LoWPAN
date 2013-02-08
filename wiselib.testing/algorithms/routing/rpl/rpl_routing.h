@@ -114,9 +114,19 @@ namespace wiselib
 		typedef typename wiselib::MapStaticVector<OsModel , node_id_t, uint8_t, 20>::iterator NeighborSet_iterator;
 		
 		//Parent Set is the set of the candidate neighbors of RFC 6719
-		typedef MapStaticVector<OsModel , node_id_t, uint16_t, PARENT_SET_SIZE> ParentSet;
-		typedef wiselib::pair<node_id_t, uint16_t> pair_t;
-		typedef typename wiselib::MapStaticVector<OsModel , node_id_t, uint16_t, PARENT_SET_SIZE>::iterator ParentSet_iterator;
+		//try parent_set with struct
+		struct Mapped_parent_set
+		{
+			uint16_t parent_rank;
+			uint8_t current_version;
+			uint8_t grounded;
+			uint8_t metric_type;
+		};
+				
+		typedef MapStaticVector<OsModel , node_id_t,  Mapped_parent_set, PARENT_SET_SIZE> ParentSet;
+		typedef wiselib::pair<node_id_t,  Mapped_parent_set> pair_t;
+		typedef typename wiselib::MapStaticVector<OsModel , node_id_t,  Mapped_parent_set, PARENT_SET_SIZE>::iterator ParentSet_iterator;
+		//end of try
 
 		typedef wiselib::pair<uint8_t, uint8_t> values_pair_t;
 
@@ -429,11 +439,13 @@ namespace wiselib
 			//
 			uint8_t int_part = (uint8_t)num;
 			return int_part;
+			
 		}
 
 		void increase_rank()
 		{
 			uint8_t int_part = DAGRank ( rank_ ) + (uint8_t) rank_increase_;
+
 			uint16_t temp = (rank_ << 8);
 			uint8_t dec_part = (temp >> 8 );
 			uint8_t temp2 = (uint8_t)((rank_increase_ - (int)rank_increase_) * 100);
@@ -498,7 +510,7 @@ namespace wiselib
 			Router,
 			Leaf 
 		};
-
+		
 		uint16_t ocp_;
 		
 		uint8_t hop_limit_; //to use if there's a HOP_COUNT constraint
@@ -1598,10 +1610,20 @@ namespace wiselib
 				//same version
 				else
 				{
+					Mapped_parent_set map;
 					uint16_t parent_rank = ( data[6] << 8 ) | data[7];
 					if( etx_ )
+					{
 						parent_rank = parent_rank + min_hop_rank_increase_;
-
+						map.metric_type = LINK_ETX;
+					}
+					
+					map.parent_rank = parent_rank;
+					map.current_version = data[5];
+					uint8_t grounded = data[8];
+					grounded = (grounded >> 7);
+					map.grounded = grounded;
+					
 					dio_count_ = dio_count_ + 1;
 
 					//the rank is relative to the preferred parent! ...
@@ -1621,14 +1643,13 @@ namespace wiselib
 						ParentSet_iterator it = parent_set_.find(sender);
 						if (it == parent_set_.end())
 						{
-							
-							parent_set_.insert( pair_t( sender, parent_rank ) );
+							parent_set_.insert( pair_t( sender, map ) );
 							//check if it is beter than the preferred parent, if so trigger update
 							//and delete parents whose rank is higher now!!!!!!!
 							if( parent_rank < rank_preferred_parent_ )
 							{	
 								preferred_parent_ = it->first;
-								rank_preferred_parent_ = it->second;
+								rank_preferred_parent_ = it->second.parent_rank;
 								
 								//modify default route entry
 								radio_ip().routing_.forwarding_table_[Radio_IP::NULL_NODE_ID].next_hop = preferred_parent_;
@@ -1660,11 +1681,11 @@ namespace wiselib
 						}
 						//if the parent is present in the parent set check whether the rank is changed
 						//...if so delete it if it is greater than the one of the current node
-						else if( it->second != parent_rank ) 
+						else if( it->second.parent_rank != parent_rank ) 
 						{
 							//if( parent_rank_ > rank_ ) //IMPOSSIBLE (see instruction before)
 							parent_set_.erase( sender );
-							parent_set_.insert( pair_t( sender, parent_rank ) );
+							parent_set_.insert( pair_t( sender, map ) );
 							
 							if ( sender == preferred_parent_ )
 							{	
@@ -1673,9 +1694,9 @@ namespace wiselib
 		
 								for (ParentSet_iterator it = parent_set_.begin(); it != parent_set_.end(); it++)
 								{
-									if ( it->second < best_rank )
+									if ( it->second.parent_rank < best_rank )
 									{
-										best_rank = it->second;
+										best_rank = it->second.parent_rank;
 										best = it->first;
 									}
 								}
@@ -1728,9 +1749,9 @@ namespace wiselib
 		
 								for (ParentSet_iterator it = parent_set_.begin(); it != parent_set_.end(); it++)
 								{
-									if ( it->second < best_rank )
+									if ( it->second.parent_rank < best_rank )
 									{
-										best_rank = it->second;
+										best_rank = it->second.parent_rank;
 										best = it->first;
 									}
 								}
@@ -1943,12 +1964,12 @@ namespace wiselib
 		//while( option_type != DODAG_CONFIGURATION )
 		//while( option_type != PREFIX_INFORMATION )
 		//bool prefix_present = false;		
-					
+		
 		bool config_present = false;
 		while( length > length_checked )
 		{
 			if( option_type == PREFIX_INFORMATION )
-				prefix_present_ = true;
+				prefix_present_ = true;  
 			else if( option_type == DODAG_CONFIGURATION )
 				config_present = true;
 			
@@ -1958,6 +1979,8 @@ namespace wiselib
 			
 		}
 
+		//once prefix_present is set, it remains true even for subsequent first dio which denotes a new version of the dodag
+		//...even if they don't contain any prefix information option
 		if( !(config_present && prefix_present_) )
 		{
 			#ifdef ROUTING_RPL_DEBUG
@@ -2316,17 +2339,29 @@ namespace wiselib
 		parent_set_.clear(); 
 		dio_count_ = dio_count_ + 1; 
 		rpl_instance_id_ = data[4];
-		version_number_ = data[5];
+		version_number_ = data[5];   //to delete perhaps
 	
 		//update the Rank and set the other fields learned from the root
 		dio_message_->template set_payload<uint8_t>( &rpl_instance_id_, 4, 1 );
 		dio_message_->template set_payload<uint8_t>( &version_number_, 5, 1 );
 				
+		Mapped_parent_set map;
 		uint16_t parent_rank = ( data[6] << 8 ) | data[7];
 		if( etx_ )
+		{
 			parent_rank = parent_rank + min_hop_rank_increase_;
+			map.metric_type = LINK_ETX;
+		}
+					
+		map.parent_rank = parent_rank;
+		map.current_version = data[5];
+		uint8_t grounded = data[8];
+		grounded = (grounded >> 7);
 		
-		parent_set_.insert( pair_t( from, parent_rank ) );
+		map.grounded = grounded;
+
+
+		parent_set_.insert( pair_t( from, map ) );
 		//First DIO, the parent is preferred						
 		preferred_parent_ = from; 
 		rank_preferred_parent_ = parent_rank;
@@ -2863,7 +2898,7 @@ namespace wiselib
 	update_dio()
 	{
 		//MUST FIRST CHECK OPTIONS, in order to understand whether there are constraints that must be satisfied
-		
+		//CHANGE THIS REGARDING RANK COMPUTATION!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
 		//change rank and update it, what else?
 		//step_of_rank depends on the metric! (updated when scanning Dag Metric Container, see obove)		
@@ -2881,7 +2916,7 @@ namespace wiselib
 		//node_id_t scan_node;
 		for (ParentSet_iterator it = parent_set_.begin(); it != parent_set_.end(); it++)
 		{
-			if ( it->second > rank_ )
+			if ( it->second.parent_rank > rank_ )
 				it->first = Radio_IP::NULL_NODE_ID;
 		}
 		
