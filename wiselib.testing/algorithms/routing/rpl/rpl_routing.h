@@ -430,25 +430,40 @@ namespace wiselib
 		//see RFC6550 pag. 22
 		uint8_t DAGRank (uint16_t rank)
 		{			
-			float num = rank/min_hop_rank_increase_;
+			float num = (float)(rank>>8)/(float)min_hop_rank_increase_;
 			//
 			uint8_t int_part = (uint8_t)num;
 			return int_part;
 			
 		}
 
-		void increase_rank()
+		void increase_rank( uint16_t parent_rank )
 		{
-			uint8_t int_part = DAGRank ( rank_ ) + (uint8_t) rank_increase_;
+			uint8_t int_part;
 
-			uint16_t temp = (rank_ << 8);
-			uint8_t dec_part = (temp >> 8 );
-			uint8_t temp2 = (uint8_t)((rank_increase_ - (int)rank_increase_) * 100);
-			dec_part = dec_part + temp2;
+			uint8_t dec_part;
+			
+			if(rank_increase_ < min_hop_rank_increase_)
+			{
+				int_part = (parent_rank >> 8) + min_hop_rank_increase_;
+				uint16_t temp = (parent_rank << 8);
+				uint8_t temp2 = (uint8_t)((rank_increase_ - (int)rank_increase_) * 100);
+				dec_part = (temp >> 8 );
+			}
+				
+			else
+			{
+				uint8_t int_part = (parent_rank >> 8) + (uint8_t) rank_increase_;
+				uint16_t temp = (parent_rank << 8);
+				dec_part = (temp >> 8 );
+				uint8_t temp2 = (uint8_t)((rank_increase_ - (int)rank_increase_) * 100);
+				dec_part = dec_part + temp2;
+				
+			}
 			rank_ = (int_part << 8 ) | (dec_part);
 			#ifdef ROUTING_RPL_DEBUG
 			char str[43];
-			debug().debug( "RPLRouting: %s Increase rank: Dec part %i, Int part %i, rank_increase is %f\n", my_address_.get_address( str), int_part, dec_part, rank_increase_ );
+			debug().debug( "RPLRouting: %s Increase rank: Int part %i, Dec part %i, rank_increase is %f\n", my_address_.get_address( str), int_part, dec_part, rank_increase_ );
 			#endif
 		}
 		
@@ -1422,7 +1437,7 @@ namespace wiselib
 				map.bidirectionality = false;
 				map.etx_received = false;
 				map.etx_forward = 0;   //to add a value that represents 'undefined', 0 maybe
-				map.etx_reverse = 0;   //to add a value that represents 'undefined', 0 maybe
+				map.etx_reverse = 1;   //to add a value that represents 'undefined', 0 maybe, No!
 
 				neighbor_set_.erase( sender );
 				neighbor_set_.insert( neigh_pair_t( sender, map ) );
@@ -2339,13 +2354,14 @@ namespace wiselib
 				
 		Mapped_parent_set map;
 		uint16_t parent_rank = ( data[6] << 8 ) | data[7];
+		
 		if( etx_ )
 		{
-			parent_rank = parent_rank + min_hop_rank_increase_;
+			//parent_rank = parent_rank + min_hop_rank_increase_;
 			map.metric_type = LINK_ETX;
 		}
 					
-		map.parent_rank = parent_rank;
+		map.parent_rank = parent_rank + min_hop_rank_increase_;
 		map.current_version = data[5];
 		uint8_t grounded = data[8];
 		grounded = (grounded >> 7);
@@ -2380,10 +2396,6 @@ namespace wiselib
 					#endif
 				}
 				
-				#ifdef ROUTING_RPL_DEBUG
-				debug().debug( "\n\nRPL Routing: Before computing: forward %i, reverse %i \n\n", it->second.etx_forward, it->second.etx_reverse );
-				#endif
-
 				float forward = 1/((float)it->second.etx_forward);
 				float reverse = 1/((float)it->second.etx_reverse);
 
@@ -2395,14 +2407,14 @@ namespace wiselib
 				debug().debug( "\n\n\nRPL Routing: %s, Rank Increase is %f, forward %f, reverse %f\n\n", my_address_.get_address(str), rank_increase_, forward, reverse );
 				#endif
 			
-				increase_rank();
+				increase_rank( parent_rank );
 			
 				#ifdef ROUTING_RPL_DEBUG
 				//char str[43];
 				uint8_t int_part = (rank_ >> 8);
 				uint16_t dec_part = (rank_ << 8);
 				dec_part = (dec_part >> 8);
-				debug().debug( "\n\n\nRPL Routing: %s, New Rank is : int part %i, dec part %i... RANK %i\n\n", my_address_.get_address(str), int_part, dec_part, rank_  );
+				debug().debug( "\n\n\nRPL Routing: %s, New Rank is : int part %i, dec part %i... RANK %i\n\n", my_address_.get_address(str), int_part, dec_part, (rank_ >> 8)  );
 				#endif
 
 			}
@@ -2413,8 +2425,11 @@ namespace wiselib
 			}
 		}	
 
+		#ifdef ROUTING_RPL_DEBUG
+		char str[43];
+		debug().debug( "\n\n\nRPL Routing: %s, Set DIO New Rank is : RANK %i\n\n", my_address_.get_address(str), rank_  );
+		#endif
 		
-	
 		dio_message_->template set_payload<uint16_t>( &rank_, 6, 1 );
 	
 		//1(grounded, 0 for Floating DODAGs) 0(predefined) 000(MOP: no downward routes) 000(default prf) = 2^7 = 128
@@ -2968,6 +2983,10 @@ namespace wiselib
 				uint8_t rank_error = (flags << 1);
 				rank_error = ( rank_error >> 7 );
 				uint16_t sender_rank = ( data_pointer[4] << 8 ) | data_pointer[5];
+				#ifdef ROUTING_RPL_DEBUG
+				debug().debug( "\nRPL Routing: FINAL DESTINATION, my rank is %i\n", DAGRank(rank_) );
+				#endif
+
 				if( sender_rank == 0 )
 				{
 					#ifdef ROUTING_RPL_DEBUG
@@ -3018,6 +3037,7 @@ namespace wiselib
 
 			if(data_pointer[3] == 0 ) //this means that the node is the source
 			{	
+
 				if( state_ == Unconnected )
 				{
 					#ifdef ROUTING_RPL_DEBUG
@@ -3026,7 +3046,9 @@ namespace wiselib
 					return  Radio_IP::DROP_PACKET;
 				}
 
-				
+				#ifdef ROUTING_RPL_DEBUG
+				debug().debug( "\nRPL Routing: SOURCE NODE, my rank is %i\n", DAGRank(rank_) );
+				#endif				
 				
 				//first node, fill the HOHO EH fields
 				data_pointer[3] = rpl_instance_id_;
@@ -3088,6 +3110,9 @@ namespace wiselib
 				uint8_t rank_error = (flags << 1);
 				rank_error = ( rank_error >> 7 );
 				uint16_t sender_rank = ( data_pointer[4] << 8 ) | data_pointer[5];
+				#ifdef ROUTING_RPL_DEBUG
+				debug().debug( "\nRPL Routing: INTERMEDIATE NODE, my rank is %i\n", DAGRank(rank_) );
+				#endif
 				if( sender_rank == 0 )
 				{
 					//This is the first router ==> add rank, of course don't check consistency
