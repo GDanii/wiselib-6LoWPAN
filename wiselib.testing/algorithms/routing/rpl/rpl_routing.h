@@ -446,15 +446,14 @@ namespace wiselib
 			if(rank_increase_ < min_hop_rank_increase_)
 			{
 				int_part = (parent_rank >> 8) + min_hop_rank_increase_;
-				uint16_t temp = (parent_rank << 8);
-				uint8_t temp2 = (uint8_t)((rank_increase_ - (int)rank_increase_) * 100);
+				uint16_t temp = (rank_ << 8);
 				dec_part = (temp >> 8 );
 			}
 				
 			else
 			{
 				uint8_t int_part = (parent_rank >> 8) + (uint8_t) rank_increase_;
-				uint16_t temp = (parent_rank << 8);
+				uint16_t temp = (rank_ << 8);
 				dec_part = (temp >> 8 );
 				uint8_t temp2 = (uint8_t)((rank_increase_ - (int)rank_increase_) * 100);
 				dec_part = dec_part + temp2;
@@ -2355,6 +2354,7 @@ namespace wiselib
 		Mapped_parent_set map;
 		uint16_t parent_rank = ( data[6] << 8 ) | data[7];
 		
+		//Update when other metrics will be supported
 		if( etx_ )
 		{
 			//parent_rank = parent_rank + min_hop_rank_increase_;
@@ -2983,19 +2983,21 @@ namespace wiselib
 				uint8_t rank_error = (flags << 1);
 				rank_error = ( rank_error >> 7 );
 				uint16_t sender_rank = ( data_pointer[4] << 8 ) | data_pointer[5];
+				uint8_t compare_rank = DAGRank( sender_rank );
 				#ifdef ROUTING_RPL_DEBUG
 				debug().debug( "\nRPL Routing: FINAL DESTINATION, my rank is %i\n", DAGRank(rank_) );
 				#endif
 
-				if( sender_rank == 0 )
+				if( compare_rank == 0 )
 				{
 					#ifdef ROUTING_RPL_DEBUG
 					debug().debug( "\nRPL Routing: FINAL DESTINATION just one hop away from the sender\n" );
 					#endif
 					return Radio_IP::CORRECT;
 				}
-				if( ( down == 1 && sender_rank > rank_ ) || (down == 0 && sender_rank < rank_) ) //inconsistency
+				if( ( down == 1 && compare_rank > DAGRank( rank_ ) ) || (down == 0 && compare_rank < DAGRank( rank_ ) ) )
 				{
+					 //inconsistency
 					if ( rank_error == 1 )
 					{
 						#ifdef ROUTING_RPL_DEBUG
@@ -3110,10 +3112,11 @@ namespace wiselib
 				uint8_t rank_error = (flags << 1);
 				rank_error = ( rank_error >> 7 );
 				uint16_t sender_rank = ( data_pointer[4] << 8 ) | data_pointer[5];
+				uint8_t compare_rank = DAGRank( sender_rank );
 				#ifdef ROUTING_RPL_DEBUG
 				debug().debug( "\nRPL Routing: INTERMEDIATE NODE, my rank is %i\n", DAGRank(rank_) );
 				#endif
-				if( sender_rank == 0 )
+				if( compare_rank == 0 )
 				{
 					//This is the first router ==> add rank, of course don't check consistency
 					data_pointer[4] = (uint8_t) (rank_ >> 8 );
@@ -3174,8 +3177,9 @@ namespace wiselib
 				{
 					//This is not the first router ==> check rank
 					
-					if( ( down == 1 && sender_rank > rank_ ) || (down == 0 && sender_rank < rank_) ) //inconsistency
+					if( ( down == 1 && compare_rank > DAGRank( rank_ ) ) || (down == 0 && compare_rank < DAGRank( rank_ ) ) ) 
 					{
+						//inconsistency
 						if ( rank_error == 1 )
 						{
 							#ifdef ROUTING_RPL_DEBUG
