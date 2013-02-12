@@ -39,6 +39,7 @@
 #define DEFAULT_MIN_HOP_RANK_INCREASE 256
 #define DEFAULT_STEP_OF_RANK 3
 #define DEFAULT_RANK_FACTOR 1
+#define INFINITE_RANK 0xFFFF
 
 //MRHOF Constants
 #define MAX_LINK_METRIC 512
@@ -124,7 +125,7 @@ namespace wiselib
 		//Parent Set is the set of the candidate neighbors of RFC 6719
 		struct Mapped_parent_set
 		{
-			uint16_t parent_rank;
+			uint16_t path_cost;
 			uint8_t current_version;
 			uint8_t grounded;
 			uint8_t metric_type;
@@ -370,7 +371,7 @@ namespace wiselib
 
 		uint8_t prepare_dao();
 
-		void update_dio();
+		void update_dio( node_id_t parent, uint16_t path_cost );
 
 		int handle_TLV( uint8_t packet_number, uint8_t* data_pointer, bool only_usage );
 
@@ -437,33 +438,31 @@ namespace wiselib
 			
 		}
 
-		void increase_rank( uint16_t parent_rank )
+		uint16_t increase_rank( uint16_t parent_rank, float rank_inc )
 		{
 			uint8_t int_part;
 
 			uint8_t dec_part;
 			
-			if(rank_increase_ < min_hop_rank_increase_)
+			if(rank_inc < min_hop_rank_increase_)
 			{
 				int_part = (parent_rank >> 8) + min_hop_rank_increase_;
-				uint16_t temp = (rank_ << 8);
+				uint16_t temp = (parent_rank << 8);
 				dec_part = (temp >> 8 );
 			}
 				
 			else
 			{
-				uint8_t int_part = (parent_rank >> 8) + (uint8_t) rank_increase_;
-				uint16_t temp = (rank_ << 8);
+				uint8_t int_part = (parent_rank >> 8) + (uint8_t) rank_inc;
+				uint16_t temp = (parent_rank << 8);
 				dec_part = (temp >> 8 );
-				uint8_t temp2 = (uint8_t)((rank_increase_ - (int)rank_increase_) * 100);
+				uint8_t temp2 = (uint8_t)((rank_inc - (int)rank_inc) * 100);
 				dec_part = dec_part + temp2;
 				
 			}
-			rank_ = (int_part << 8 ) | (dec_part);
-			#ifdef ROUTING_RPL_DEBUG
-			char str[43];
-			debug().debug( "RPLRouting: %s Increase rank: Int part %i, Dec part %i, rank_increase is %f\n", my_address_.get_address( str), int_part, dec_part, rank_increase_ );
-			#endif
+			uint16_t return_value = (int_part << 8 ) | (dec_part);
+			
+			return return_value;
 		}
 		
 		
@@ -549,7 +548,7 @@ namespace wiselib
 
 		node_id_t preferred_parent_;
 		 	
-		bool change_version_; //used to stop the old timer and start the new one (see timer_elapsed function)
+		bool stop_timers_; //used to stop the old timer and start the new one (see timer_elapsed function)
 		uint8_t count_timer_;
 
 		//timer variables
@@ -571,7 +570,7 @@ namespace wiselib
 
 		bool prefix_present_;
 
-		uint16_t rank_preferred_parent_; //Initialize it
+		uint16_t best_path_cost_; //Initialize it
 		uint16_t cur_min_path_cost_; //path cost of the current preferred parent (RFC 6719, sect. 3.2), to allow hysteresis
 						
 		//A global RPLInstanceID must be unique to the whole LLN!
@@ -634,7 +633,7 @@ namespace wiselib
 		dao_sequence_ (0),
 		path_sequence_ (0),
 		version_last_time_ (0),
-		change_version_ (false),
+		stop_timers_ (false),
 		prefix_present_ (false),
 		count_timer_ (0),
 		mop_set_ (true),
@@ -647,7 +646,7 @@ namespace wiselib
 		min_hop_rank_increase_ (DEFAULT_MIN_HOP_RANK_INCREASE),
 		DAGMaxRankIncrease_ ( 0 ), //0 means disabled
 		preferred_parent_ ( Radio_IP::NULL_NODE_ID ),
-		rank_preferred_parent_ (0xFFFF)
+		best_path_cost_ (0xFFFF)
 	{}
 	// -----------------------------------------------------------------------
 	template<typename OsModel_P,
@@ -1145,7 +1144,7 @@ namespace wiselib
 				#endif
 				send_dis( dest, dis_reference_number_, NULL );
 				//This timer depends on the size of the network
-				timer().template set_timer<self_type, &self_type::floating_timer_elapsed>( 3000, this, 0 );
+				timer().template set_timer<self_type, &self_type::floating_timer_elapsed>( 9000, this, 0 );
 			
 			}
 			else
@@ -1172,7 +1171,7 @@ namespace wiselib
 	{
 		
 		dio_count_ = 0;
-		if( !change_version_ )
+		if( !stop_timers_ )
 		{
 			
 			if ( 2 * current_interval_ < max_interval_ )
@@ -1193,10 +1192,18 @@ namespace wiselib
 					sending_threshold_, this, 0 );	
 			
 			version_last_time_ = version_number_;
-			
+
+			//A sort of ND compliant with RPL
+			if (count_timer_ >= 20)
+			{
+				//find_neighbors();  //To Update
+				count_timer_ = 0;
+			}
+			count_timer_ = count_timer_ + 1;
 		}
 		
-		if ( version_last_time_ != version_number_ )
+		//Enter here just once per 'new version DIO'
+		else if ( version_last_time_ != version_number_ )
 		{
 			if ( 2 * current_interval_ < max_interval_ )
 				set_current_interval(2); //double the interval
@@ -1216,18 +1223,17 @@ namespace wiselib
 					sending_threshold_, this, 0 );	
 			
 			version_last_time_ = version_number_;
+			stop_timers_ = false;
+	
+			//A sort of ND compliant with RPL
+			if (count_timer_ >= 20)
+			{
+				//find_neighbors();  //To Update
+				count_timer_ = 0;
+			}
+			count_timer_ = count_timer_ + 1;
 		}
-		else 
-			change_version_ = false;
-		
-		//A sort of ND compliant with RPL
-		if (count_timer_ >= 20)
-		{
-			//find_neighbors();  //To Update
-			count_timer_ = 0;
-		}
-		count_timer_ = count_timer_ + 1;
-		
+			
 	}
 	
 	// -----------------------------------------------------------------------
@@ -1381,7 +1387,6 @@ namespace wiselib
 		
 		if( message->transport_next_header() == Radio_IP::UDP )
 		{	
-			//THEN ADD NOTIFY RECEIVER FUNCTION!
 			data = message->payload();
 			uint8_t what = data[9];
 			#ifdef ROUTING_RPL_DEBUG
@@ -1489,9 +1494,7 @@ namespace wiselib
 			else if( neigh_msg_type == 3 )
 			{
 				//ETX Responses (ACKs), confirmation of the forward value
-				//Node is reachable (10)...
-				//...this data structure is also used to verify whether the ETX ACK has been received (sse timer)
-
+				
 				#ifdef ROUTING_RPL_DEBUG
 				debug().debug( "\nRPL Routing: I'm %s, Node %s confirm my forward \n", my_address_.get_address(str), sender.get_address(str2) );
 				#endif
@@ -1506,7 +1509,6 @@ namespace wiselib
 					reverse = it->second.etx_reverse;
 				}
 				
-
 				Mapped_neighbor_set map;
 				//If I receive this message it means that the neighbor has received my request message
 				map.bidirectionality = true; 
@@ -1567,7 +1569,9 @@ namespace wiselib
 				packet_pool_mgr_->clean_packet( message );
 				return;
 			}
-			if ( state_ == Unconnected)	
+
+
+			if( state_ == Unconnected)	
 			{	
 				//first_dio() need to be called only if the message contains the DODAG_CONFIGURATION_OPTION
 				//To check this I only need to verify whether the length of the payload is more than 28 bytes...
@@ -1590,13 +1594,28 @@ namespace wiselib
 
 			else if ( state_ == Connected || state_ == Router || state_ == Leaf )
 			{
-				//If the version is old ignore the message
-				if( version_number_ > data[5] )
+
+				uint16_t check_rank = ( data[6] << 8 ) | data[7];
+				if( check_rank == INFINITE_RANK )
 				{
+					parent_set_.erase( sender );
+					if ( parent_set_.empty() )
+					{
+						//NO MORE PARENTS!!!! MANAGE IT
+						rank_ = INFINITE_RANK;
+						state_ = Unconnected;
+						dio_message_->template set_payload<uint16_t>( &rank_, 6, 1 );
+	
+						send_dio( Radio_IP::BROADCAST_ADDRESS, dio_reference_number_, NULL );  
+
+						//STOP TIMERS?
+						stop_timers_ = true;
+						//send DIS? ...CREATE FLOATING DODAG if no response to DIS received
+						timer().template set_timer<self_type, &self_type::dis_delay>( 1000, this, 0 );
+					}
 					packet_pool_mgr_->clean_packet( message );
 					return;
 				}
-				
 				//Compare the received message with the stored one..
 				//if they are the same DIO then increase the counter, otherwise it may be a new version
 				//Here I can also process DIO messages without the configuration option...
@@ -1616,14 +1635,14 @@ namespace wiselib
 						packet_pool_mgr_->clean_packet( message );
 						return;
 					}
-					//Join new version only if the neighbor is reachable
+					//Join new version only if the neighbor is reachable (this is done in first DIO)
 					if( ! scan_neighbor( sender ) )
 					{
 						packet_pool_mgr_->clean_packet( message );
 						return;				
 					}
 					//stop the current timer
-					change_version_ = true;
+					stop_timers_ = true;
 					//create a new message and restart the timer (RFC6550 pag.74)
 					first_dio( sender, data, length );
 				}
@@ -1631,19 +1650,51 @@ namespace wiselib
 				//same version
 				else
 				{
-					Mapped_parent_set map;
+										
 					uint16_t parent_rank = ( data[6] << 8 ) | data[7];
-					if( etx_ )
+					uint16_t parent_path_cost;
+					uint16_t rank_inc;
+					//update_dio ( sender, parent_rank )
+				
+					if (ocp_ == 0 )
 					{
-						parent_rank = parent_rank + min_hop_rank_increase_;
-						map.metric_type = LINK_ETX;
+						rank_inc = ((rank_factor_ * step_of_rank_) + rank_stretch_ ) * min_hop_rank_increase_;
+						parent_path_cost = parent_rank + rank_inc;
 					}
-					
-					map.parent_rank = parent_rank;
+					else
+					{
+						if( etx_ )
+						{
+				
+							NeighborSet_iterator it = neighbor_set_.find( preferred_parent_ );
+							if( it == neighbor_set_.end() )
+							{
+								#ifdef ROUTING_RPL_DEBUG
+								debug().debug( "\n\nRPL Routing: ENTRY NOT PRESENT!!!!??????\n\n" );
+								#endif
+							}
+				
+							float forward = 1/((float)it->second.etx_forward);
+							float reverse = 1/((float)it->second.etx_reverse);
+
+							rank_inc = 1/(forward * reverse);
+
+							parent_path_cost = increase_rank( parent_rank, rank_inc );
+										
+						}
+						else
+						{
+							rank_inc = step_of_rank_ * min_hop_rank_increase_; 
+							parent_path_cost = parent_rank + rank_inc;
+						}
+					}
+				
+					Mapped_parent_set map;
 					map.current_version = data[5];
 					uint8_t grounded = data[8];
 					grounded = (grounded >> 7);
-					map.grounded = grounded;
+					map.grounded = grounded;			
+					
 					
 					dio_count_ = dio_count_ + 1;
 
@@ -1652,7 +1703,7 @@ namespace wiselib
 
 					//process only messages sent by nodes whose rank is lower than the rank of the actual node
 					//otherwise the received rank is greater, update the parent!
-					if (parent_rank < rank_ )  //to add the equality? No
+					if (parent_path_cost < rank_ )  //to add the equality? No
 					{
 						if( ! scan_neighbor( sender ) )
 						{
@@ -1664,19 +1715,14 @@ namespace wiselib
 						ParentSet_iterator it = parent_set_.find(sender);
 						if (it == parent_set_.end())
 						{
+							map.path_cost = parent_path_cost;
 							parent_set_.insert( pair_t( sender, map ) );
 							//check if it is beter than the preferred parent, if so trigger update
 							//and delete parents whose rank is higher now!!!!!!!
-							if( parent_rank < rank_preferred_parent_ )
+							if( parent_path_cost < best_path_cost_ )
 							{	
-								preferred_parent_ = it->first;
-								rank_preferred_parent_ = it->second.parent_rank;
-								
-								//modify default route entry
-								radio_ip().routing_.forwarding_table_[Radio_IP::NULL_NODE_ID].next_hop = preferred_parent_;
-								//now compute new rank!
 								//should I stop the timers??? NO JUST CHANGE THE VALUES IN DIO MESSAGE
-								update_dio(); //THIS FUNCTION MUST ALSO UPDATE THE PARENT SET
+								update_dio( sender, parent_path_cost); 
 
 								//SEND DAO, Change the DaoSequenceNumber and PathSequence
 								//uint8_t dao_length;
@@ -1702,22 +1748,23 @@ namespace wiselib
 						}
 						//if the parent is present in the parent set check whether the rank is changed
 						//...if so delete it if it is greater than the one of the current node
-						else if( it->second.parent_rank != parent_rank ) 
+						else if( it->second.path_cost != parent_path_cost ) 
 						{
-							//if( parent_rank_ > rank_ ) //IMPOSSIBLE (see instruction before)
-							parent_set_.erase( sender );
-							parent_set_.insert( pair_t( sender, map ) );
-							
+							it->second.path_cost = parent_path_cost;						
+
 							if ( sender == preferred_parent_ )
 							{	
+								#ifdef ROUTING_RPL_DEBUG
+								debug().debug( "\nRPLRouting: CHANGE RANK. FINDING NEW PREFERRED PARENT\n" );
+								#endif
 								node_id_t best = Radio_IP::NULL_NODE_ID;
-								uint16_t best_rank = 0xFFFF;
+								uint16_t current_best_path_cost = 0xFFFF;
 		
 								for (ParentSet_iterator it = parent_set_.begin(); it != parent_set_.end(); it++)
 								{
-									if ( it->second.parent_rank < best_rank )
+									if ( it->second.path_cost < current_best_path_cost )
 									{
-										best_rank = it->second.parent_rank;
+										current_best_path_cost = it->second.path_cost;
 										best = it->first;
 									}
 								}
@@ -1728,11 +1775,10 @@ namespace wiselib
 								 	preferred_parent_ = best;
 									radio_ip().routing_.forwarding_table_[Radio_IP::NULL_NODE_ID].next_hop = preferred_parent_;
 								}
-								rank_preferred_parent_ = best_rank;
-								
+																
 								//CHANGE THE RANK NODE ANYWAY AND ADVERTISE CHILDREN, HOW, FIRST_DIO????
 								//BUT WITH FIRST_DIO THE PARENT SET IS CLEARED!!!!
-								update_dio();
+								update_dio( sender, current_best_path_cost );
 								
 								//SEND DAO, Change the DaoSequenceNumber and PathSequence
 								//uint8_t dao_length;
@@ -1765,25 +1811,23 @@ namespace wiselib
 						{	
 							if ( !parent_set_.empty() )
 							{
+								#ifdef ROUTING_RPL_DEBUG
+								debug().debug( "\nRPLRouting: FINDING NEW PREFERRED PARENT\n" );
+								#endif
 								node_id_t best = Radio_IP::NULL_NODE_ID;
-								uint16_t best_rank = 0xFFFF;
+								uint16_t current_best_path_cost = 0xFFFF;
 		
 								for (ParentSet_iterator it = parent_set_.begin(); it != parent_set_.end(); it++)
 								{
-									if ( it->second.parent_rank < best_rank )
+									if ( it->second.path_cost < current_best_path_cost )
 									{
-										best_rank = it->second.parent_rank;
+										current_best_path_cost = it->second.path_cost;
 										best = it->first;
 									}
 								}
 															
 								//NEW PREFERRED PARENT
-								preferred_parent_ = best;
-								rank_preferred_parent_ = best_rank;
-							
-								//CHANGE THE RANK NODE ANYWAY AND ADVERTISE CHILDREN, HOW, FIRST_DIO????
-								//BUT WITH FIRST_DIO THE PARENT SET IS CLEARED!!!!
-								update_dio();
+								update_dio( sender, current_best_path_cost);
 
 								//SEND DAO, NO NEED TO PREPARE IT.. BUT CHANGE THE DaoSequenceNumber
 								//uint8_t dao_length;
@@ -1801,10 +1845,25 @@ namespace wiselib
 							}
 							else
 							{
+								//IT DOESN'T WORK FOR THE MOMENT
+								/*
+								#ifdef ROUTING_RPL_DEBUG
+								debug().debug( "\nRPLRouting: NO MORE PARENTS, ADVERTISE INFINITE RANK\n" );
+								#endif
 								//NO MORE PARENTS!!!! MANAGE IT
-								//ADVERTISE INFINITE RANK?? TO DO
+								rank_ = INFINITE_RANK;
+								state_ = Unconnected;
+								dio_message_->template set_payload<uint16_t>( &rank_, 6, 1 );
+
+								send_dio( Radio_IP::BROADCAST_ADDRESS, dio_reference_number_, NULL );  
+
 								//STOP TIMERS?
-								//CREATE FLOATING DODAG throhgh FLOATING TIMER?
+								stop_timers_ = true;
+								//send DIS? ...CREATE FLOATING DODAG if no response to DIS received
+								timer().template set_timer<self_type, &self_type::dis_delay>( 1000, this, 0 );
+								packet_pool_mgr_->clean_packet( message );
+								return;
+								*/
 							}
 						}
 								
@@ -2000,7 +2059,7 @@ namespace wiselib
 			
 		}
 
-		//once prefix_present is set, it remains true even for subsequent first dio which denotes a new version of the dodag
+		//once prefix_present is set, it remains true even for subsequent first DIOs which denotes a new version of the dodag
 		//...even if they don't contain any prefix information option
 		if( !(config_present && prefix_present_) )
 		{
@@ -2342,7 +2401,7 @@ namespace wiselib
 	{		
 		
 		//If This is a new version, should I maintain the old parents related to older versions? TO UNDERSTAND
-		//parent_set_.clear(); 
+		parent_set_.clear(); 
 		dio_count_ = dio_count_ + 1; 
 		rpl_instance_id_ = data[4];
 		version_number_ = data[5];   //to delete perhaps
@@ -2351,49 +2410,37 @@ namespace wiselib
 		dio_message_->template set_payload<uint8_t>( &rpl_instance_id_, 4, 1 );
 		dio_message_->template set_payload<uint8_t>( &version_number_, 5, 1 );
 				
-		Mapped_parent_set map;
-		uint16_t parent_rank = ( data[6] << 8 ) | data[7];
 		
-		//Update when other metrics will be supported
-		if( etx_ )
-		{
-			//parent_rank = parent_rank + min_hop_rank_increase_;
-			map.metric_type = LINK_ETX;
-		}
-					
-		map.parent_rank = parent_rank + min_hop_rank_increase_;
+		uint16_t parent_rank = ( data[6] << 8 ) | data[7];
+			
+		Mapped_parent_set map;		
 		map.current_version = data[5];
 		uint8_t grounded = data[8];
 		grounded = (grounded >> 7);
-		
 		map.grounded = grounded;
 
-		parent_set_.insert( pair_t( from, map ) );
-		//First DIO, the parent is preferred						
-		preferred_parent_ = from; 
-		rank_preferred_parent_ = parent_rank;
-
-		//ADD default route
-		Forwarding_table_value entry( preferred_parent_, 0, 0, 0 );
-		
-		radio_ip().routing_.forwarding_table_.insert( ft_pair_t( Radio_IP::NULL_NODE_ID, entry ) );
-		
 		//step_of_rank depends on the metric! (updated when scanning Dag Metric Container, see obove)		
 		if (ocp_ == 0 )
 		{
 			rank_increase_ = ((rank_factor_ * step_of_rank_) + rank_stretch_ ) * min_hop_rank_increase_;
-			rank_ = rank_preferred_parent_ + rank_increase_;
+			best_path_cost_ = parent_rank + rank_increase_;
+			rank_ = best_path_cost_;
+			map.path_cost = best_path_cost_;
+			map.metric_type = 0;
+			
 		}
 		else
 		{
 			if( etx_ )
 			{
-				NeighborSet_iterator it = neighbor_set_.find( preferred_parent_ );
+				
+				NeighborSet_iterator it = neighbor_set_.find( from );
 				if( it == neighbor_set_.end() )
 				{
 					#ifdef ROUTING_RPL_DEBUG
 					debug().debug( "\n\nRPL Routing: ENTRY NOT PRESENT!!!!??????\n\n" );
 					#endif
+					return;
 				}
 				
 				float forward = 1/((float)it->second.etx_forward);
@@ -2404,10 +2451,13 @@ namespace wiselib
 				#ifdef ROUTING_RPL_DEBUG
 				char str[43];
 				
-				debug().debug( "\n\n\nRPL Routing: %s, Rank Increase is %f, forward %f, reverse %f\n\n", my_address_.get_address(str), rank_increase_, forward, reverse );
+				debug().debug( "\n\n\nRPL Routing: %s, Rank Increase is %f, forward %f, reverse %f, min_hop %i \n\n", my_address_.get_address(str), rank_increase_, forward, reverse, min_hop_rank_increase_ );
 				#endif
-			
-				increase_rank( parent_rank );
+				
+				rank_ = increase_rank( parent_rank, rank_increase_ );
+				best_path_cost_ = rank_;
+				map.path_cost = best_path_cost_;
+				map.metric_type = LINK_ETX;
 			
 				#ifdef ROUTING_RPL_DEBUG
 				//char str[43];
@@ -2420,10 +2470,19 @@ namespace wiselib
 			}
 			else
 			{
-				rank_increase_ = step_of_rank_ * min_hop_rank_increase_; //Understand it better (out of scope, up to me)
-				rank_ = rank_preferred_parent_ + rank_increase_;
+				rank_increase_ = step_of_rank_ * min_hop_rank_increase_; 
+				best_path_cost_ = parent_rank + rank_increase_;
+				rank_ = best_path_cost_;
+				map.path_cost = best_path_cost_;
+				map.metric_type = 0; //to verify the real metric type
 			}
 		}	
+		//First DIO, the parent is preferred						
+		preferred_parent_ = from; 
+		parent_set_.insert( pair_t( from, map ) );
+		//ADD default route
+		Forwarding_table_value entry( preferred_parent_, 0, 0, 0 );
+		radio_ip().routing_.forwarding_table_.insert( ft_pair_t( Radio_IP::NULL_NODE_ID, entry ) );
 
 		#ifdef ROUTING_RPL_DEBUG
 		char str[43];
@@ -2915,28 +2974,30 @@ namespace wiselib
 		typename Clock_P>
 	void
 	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
-	update_dio()
+	update_dio( node_id_t parent, uint16_t path_cost )
 	{
 		//MUST FIRST CHECK OPTIONS, in order to understand whether there are constraints that must be satisfied
-		//CHANGE THIS REGARDING RANK COMPUTATION!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-
+	
 		//change rank and update it, what else?
-		//step_of_rank depends on the metric! (updated when scanning Dag Metric Container, see obove)		
-		if (ocp_ == 0 )
-			rank_increase_ = ((rank_factor_ * step_of_rank_) + rank_stretch_ ) * min_hop_rank_increase_;
-		else
-			rank_increase_ = step_of_rank_ * min_hop_rank_increase_; //Understand it better (out of scope, up to me)
+		//step_of_rank depends on the metric! (updated when scanning Dag Metric Container, see obove)	
+		ParentSet_iterator it = parent_set_.find( parent );	//parent it is always present when this function is called
+		
+		preferred_parent_ = parent; 
+		//update default route
+		
+		radio_ip().routing_.forwarding_table_[Radio_IP::NULL_NODE_ID].next_hop = parent;
 
-		rank_ = rank_preferred_parent_ + rank_increase_;
+		best_path_cost_ = path_cost;
+		rank_ = path_cost;
 	
 		dio_message_->template set_payload<uint16_t>( &rank_, 6, 1 );
 
 		//now delete from the parent set entries whose rank is higher than the one of the current node
 		
-		//node_id_t scan_node;
+		//delete all the entry whose rank is higher than the rank of the current node
 		for (ParentSet_iterator it = parent_set_.begin(); it != parent_set_.end(); it++)
 		{
-			if ( it->second.parent_rank > rank_ )
+			if ( it->second.path_cost > rank_ )
 				it->first = Radio_IP::NULL_NODE_ID;
 		}
 		
