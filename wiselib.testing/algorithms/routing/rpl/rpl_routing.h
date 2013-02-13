@@ -35,6 +35,10 @@
 #define DEFAULT_DIO_INTERVAL_MIN 3	//Imin    2^3 ms
 #define DEFAULT_DIO_INTERVAL_DOUBLINGS 20	//Imax   (2^20)*Imin ms
 #define DEFAULT_DIO_REDUNDANCY_CONSTANT 10	//k
+
+#define DEFAULT_DAO_DELAY 1000
+
+
 //Rank Constants
 #define DEFAULT_MIN_HOP_RANK_INCREASE 256
 #define DEFAULT_STEP_OF_RANK 3
@@ -338,6 +342,8 @@ namespace wiselib
 		void floating_timer_elapsed( void *userdata );
 
 		void ETX_timer_elapsed( void *userdata );
+		
+		void update_timer_elapsed( void* userdata );
 
 		void trigger_ETX_computation( uint8_t *addr );
 
@@ -372,6 +378,10 @@ namespace wiselib
 		uint8_t prepare_dao();
 
 		void update_dio( node_id_t parent, uint16_t path_cost );
+
+		void update_neighborhood();
+
+		uint8_t delete_neighbor( node_id_t neighbor );
 
 		int handle_TLV( uint8_t packet_number, uint8_t* data_pointer, bool only_usage );
 
@@ -568,6 +578,8 @@ namespace wiselib
 
 		bool etx_;
 
+		bool first_ETX_retry_;
+
 		bool prefix_present_;
 
 		uint16_t best_path_cost_; //Initialize it
@@ -627,7 +639,8 @@ namespace wiselib
 	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
 	RPLRouting()
 		: rpl_instance_id_ (1),
-		etx_ (true),  
+		etx_ (true),
+		first_ETX_retry_ (false),
 		state_ (Unconnected),
 		dio_count_ (0),
 		dao_sequence_ (0),
@@ -1194,9 +1207,14 @@ namespace wiselib
 			version_last_time_ = version_number_;
 
 			//A sort of ND compliant with RPL
-			if (count_timer_ >= 20)
+			if (count_timer_ >= 10)
 			{
 				//find_neighbors();  //To Update
+				first_ETX_retry_ = true;
+				//to restart only when the neighbor update procedure is supposed to be finished (say 3 seconds)
+				stop_timers_ = true; 
+				timer().template set_timer<self_type, &self_type::update_timer_elapsed>( 3000, this, 0 );
+				update_neighborhood();
 				count_timer_ = 0;
 			}
 			count_timer_ = count_timer_ + 1;
@@ -1234,6 +1252,22 @@ namespace wiselib
 			count_timer_ = count_timer_ + 1;
 		}
 			
+	}
+
+	// -----------------------------------------------------------------------
+	
+	template<typename OsModel_P,
+		typename Radio_IP_P,
+		typename Radio_P,
+		typename Debug_P,
+		typename Timer_P,
+		typename Clock_P>
+	void
+	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
+	update_timer_elapsed( void* userdata )
+	{
+		stop_timers_ = false;
+		timer().template set_timer<self_type, &self_type::timer_elapsed>( 1000, this, 0 );
 	}
 	
 	// -----------------------------------------------------------------------
@@ -1446,13 +1480,14 @@ namespace wiselib
 				neighbor_set_.erase( sender );
 				neighbor_set_.insert( neigh_pair_t( sender, map ) );
 				
-				trigger_ETX_computation( neighbor_set_.find( sender)->first.addr );
+				trigger_ETX_computation( neighbor_set_.find( sender )->first.addr );
 
 				packet_pool_mgr_->clean_packet( message );
 						
 			}
 			else if( neigh_msg_type == 2 )
 			{
+				
 
 				#ifdef ROUTING_RPL_DEBUG
 				debug().debug( "\nRPL Routing: I'm %s, ETX Request received from %s\n", my_address_.get_address(str), sender.get_address(str2) );
@@ -1466,7 +1501,12 @@ namespace wiselib
 								
 				NeighborSet_iterator it = neighbor_set_.find( sender );
 				if( it != neighbor_set_.end() )				
-				{
+				{	
+					//this is to manage first neighborhood update message 
+					if (data[6] == 10 )
+						it->second.etx_received = false;
+
+
 					forward = it->second.etx_forward;
 					if( ! it->second.etx_received )
 						reverse = data[5];
@@ -1604,6 +1644,7 @@ namespace wiselib
 						//NO MORE PARENTS!!!! MANAGE IT
 						rank_ = INFINITE_RANK;
 						state_ = Unconnected;
+						preferred_parent_ = Radio_IP::NULL_NODE_ID;
 						dio_message_->template set_payload<uint16_t>( &rank_, 6, 1 );
 	
 						send_dio( Radio_IP::BROADCAST_ADDRESS, dio_reference_number_, NULL );  
@@ -1724,10 +1765,9 @@ namespace wiselib
 								//should I stop the timers??? NO JUST CHANGE THE VALUES IN DIO MESSAGE
 								update_dio( sender, parent_path_cost); 
 
-								//SEND DAO, Change the DaoSequenceNumber and PathSequence
-								//uint8_t dao_length;
-								//dao_length = prepare_dao();
-								//dao_message_->set_transport_length( dao_length );
+								//SEND DAO, Change the DaoSequenceNumber, PathSequence
+								//Invalidate the 
+								
 								dao_sequence_ = dao_sequence_ + 1;
 								dao_message_->template set_payload<uint8_t>( &dao_sequence_, 7, 1 );
 								path_sequence_ = path_sequence_ + 1;
@@ -1807,6 +1847,7 @@ namespace wiselib
 						//parent_rank > rank
 						//delete parent from the parent set
 						parent_set_.erase( sender );
+						
 						if ( sender == preferred_parent_ ) //Here more complex
 						{	
 							if ( !parent_set_.empty() )
@@ -1845,25 +1886,28 @@ namespace wiselib
 							}
 							else
 							{
-								//IT DOESN'T WORK FOR THE MOMENT
-								/*
-								#ifdef ROUTING_RPL_DEBUG
-								debug().debug( "\nRPLRouting: NO MORE PARENTS, ADVERTISE INFINITE RANK\n" );
-								#endif
-								//NO MORE PARENTS!!!! MANAGE IT
-								rank_ = INFINITE_RANK;
-								state_ = Unconnected;
-								dio_message_->template set_payload<uint16_t>( &rank_, 6, 1 );
+								//IT Seems that it works, make it more robust anyway 
+								
+								if (mop_set_)
+								{
+									#ifdef ROUTING_RPL_DEBUG
+									debug().debug( "\nRPLRouting: NO MORE PARENTS, ADVERTISE INFINITE RANK\n" );
+									#endif
+									//NO MORE PARENTS!!!! MANAGE IT
+									rank_ = INFINITE_RANK;
+									state_ = Unconnected;
+									preferred_parent_ = Radio_IP::NULL_NODE_ID;
+									dio_message_->template set_payload<uint16_t>( &rank_, 6, 1 );
 
-								send_dio( Radio_IP::BROADCAST_ADDRESS, dio_reference_number_, NULL );  
+									send_dio( Radio_IP::BROADCAST_ADDRESS, dio_reference_number_, NULL );  
 
-								//STOP TIMERS?
-								stop_timers_ = true;
-								//send DIS? ...CREATE FLOATING DODAG if no response to DIS received
-								timer().template set_timer<self_type, &self_type::dis_delay>( 1000, this, 0 );
-								packet_pool_mgr_->clean_packet( message );
-								return;
-								*/
+									//STOP TIMERS?
+									stop_timers_ = true;
+									//send DIS? ...CREATE FLOATING DODAG if no response to DIS received
+									timer().template set_timer<self_type, &self_type::dis_delay>( 1000, this, 0 );	
+									packet_pool_mgr_->clean_packet( message );
+									return;
+								}							
 							}
 						}
 								
@@ -2740,12 +2784,21 @@ namespace wiselib
 		NeighborSet_iterator it = neighbor_set_.find( node );
 		if( it != neighbor_set_.end() )		
 		{
-			it->second.etx_forward = it->second.etx_forward + 1;
+			//if the number of tentative are over a certain threshold the neighbor is considered not reachable anymore
+			if( it->second.etx_forward > 10 )
+				//uint8_t ret = delete_neighbor( node );
+				if ( delete_neighbor( node ) == 1 )
+					return; //1 means no parents anymore!
+			
+			if( ! first_ETX_retry_ )
+				it->second.etx_forward = it->second.etx_forward + 1;
+
 			forward = it->second.etx_forward;
 			reverse = it->second.etx_reverse;
 			map.bidirectionality = it->second.bidirectionality;
 			map.etx_received = it->second.etx_received;
 			neighbor_set_.erase( node );
+			
 		}
 		map.etx_forward = forward;
 		map.etx_reverse = reverse;
@@ -2775,8 +2828,19 @@ namespace wiselib
 		
 		message->template set_payload<uint8_t>( &forward, 5, 1 );
 		
+		if ( first_ETX_retry_ )
+		{
+			setter_byte = 10;
+			message->template set_payload<uint8_t>( &setter_byte, 6, 1 );
+			first_ETX_retry_ = false;
+		}
+		else
+		{
+			setter_byte = 0;
+			message->template set_payload<uint8_t>( &setter_byte, 6, 1 );
+		}		
 
-		message->set_transport_length( 6 ); 
+		message->set_transport_length( 7 ); 
 		
 		message->set_transport_next_header( Radio_IP::ICMPV6 );
 		message->set_hop_limit(255);
@@ -2843,6 +2907,114 @@ namespace wiselib
 		
 
 		return SUCCESS;
+	}
+
+	// -----------------------------------------------------------------------
+	
+	template<typename OsModel_P,
+		typename Radio_IP_P,
+		typename Radio_P,
+		typename Debug_P,
+		typename Timer_P,
+		typename Clock_P>
+	uint8_t
+	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
+	delete_neighbor( node_id_t neighbor )
+	{
+		
+		neighbor_set_.erase( neighbor );
+
+		//IMPORTANT: CLEAN ALSE THE POSSIBLE ENTRY IN THE FORWARDING TABLE
+		ForwardingTableIterator it_neigh = radio_ip().routing_.forwarding_table_.find( neighbor );
+		radio_ip().routing_.forwarding_table_.erase( it_neigh );
+
+		if( state_ == Dodag_root || state_ == Floating_Dodag_root )
+			return 0;
+		else
+			parent_set_.erase( neighbor );
+
+		//what if it was a preferred parent? If not I can go on, since there's at least an entry in the parent_set
+		if( neighbor == preferred_parent_ )
+		{
+			//verify if it was the only one, if so send dis and start dis_timer, otherwise elect new preferred_parent
+			//ParentSet_iterator it = parent_set_.begin();
+			if( parent_set_.empty() )
+			{
+				#ifdef ROUTING_RPL_DEBUG
+				debug().debug( "\nRPLRouting: NO MORE PARENTS, ADVERTISE INFINITE RANK\n" );
+				#endif
+				
+				rank_ = INFINITE_RANK;
+				state_ = Unconnected;
+				preferred_parent_ = Radio_IP::NULL_NODE_ID;
+				dio_message_->template set_payload<uint16_t>( &rank_, 6, 1 );
+
+				send_dio( Radio_IP::BROADCAST_ADDRESS, dio_reference_number_, NULL );  
+
+				//STOP TIMERS?
+				stop_timers_ = true;
+				//send DIS? ...CREATE FLOATING DODAG if no response to DIS received
+				timer().template set_timer<self_type, &self_type::dis_delay>( 1000, this, 0 );
+				return 1;	
+			}
+			else
+			{
+				#ifdef ROUTING_RPL_DEBUG
+				debug().debug( "\nRPLRouting: FINDING NEW PREFERRED PARENT\n" );
+				#endif
+				node_id_t best = Radio_IP::NULL_NODE_ID;
+				uint16_t current_best_path_cost = 0xFFFF;
+		
+				for (ParentSet_iterator it = parent_set_.begin(); it != parent_set_.end(); it++)
+				{
+					if ( it->second.path_cost < current_best_path_cost )
+					{
+						current_best_path_cost = it->second.path_cost;
+						best = it->first;
+					}
+				}
+															
+				//NEW PREFERRED PARENT
+				update_dio( neighbor, current_best_path_cost);
+
+				//SEND DAO, NO NEED TO PREPARE IT.. BUT CHANGE THE DaoSequenceNumber
+				//uint8_t dao_length;
+				//dao_length = prepare_dao();
+				//dao_message_->set_transport_length( dao_length );
+							
+				dao_sequence_ = dao_sequence_ + 1;
+				dao_message_->template set_payload<uint8_t>( &dao_sequence_, 7, 1 );
+				path_sequence_ = path_sequence_ + 1;
+				dao_message_->template set_payload<uint8_t>( &path_sequence_, 48, 1 );
+				if( mop_ == 1 )
+					send_dao( dodag_id_, dao_reference_number_, NULL );
+				else if( mop_ == 2 )
+					send_dao( preferred_parent_, dao_reference_number_, NULL );
+				return 0;
+			}
+		}
+		return 0;
+	}
+
+	// -----------------------------------------------------------------------
+	
+	template<typename OsModel_P,
+		typename Radio_IP_P,
+		typename Radio_P,
+		typename Debug_P,
+		typename Timer_P,
+		typename Clock_P>
+	void
+	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
+	update_neighborhood()
+	{
+		//for each neighbor verify again ETX
+		for (NeighborSet_iterator it = neighbor_set_.begin(); it != neighbor_set_.end(); it++)
+		{
+			it->second.etx_received = false;
+			it->second.bidirectionality = false;
+			trigger_ETX_computation( it->first.addr );
+		}
 	}
 
 	// -----------------------------------------------------------------------
