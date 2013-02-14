@@ -344,6 +344,8 @@ namespace wiselib
 		void ETX_timer_elapsed( void *userdata );
 		
 		void update_timer_elapsed( void* userdata );
+			
+		void find_neighbors_timer_elapsed( void* userdata );
 
 		void trigger_ETX_computation( uint8_t *addr );
 
@@ -576,9 +578,13 @@ namespace wiselib
 		uint8_t mop_;
 		bool mop_set_;
 
+		uint8_t bcast_neigh_count_;
+
 		bool etx_;
 
 		bool first_ETX_retry_;
+
+		bool discovery_received_;
 
 		bool prefix_present_;
 
@@ -641,8 +647,10 @@ namespace wiselib
 		: rpl_instance_id_ (1),
 		etx_ (true),
 		first_ETX_retry_ (false),
+		discovery_received_ (false),
 		state_ (Unconnected),
 		dio_count_ (0),
+		bcast_neigh_count_ (0),
 		dao_sequence_ (0),
 		path_sequence_ (0),
 		version_last_time_ (0),
@@ -730,6 +738,8 @@ namespace wiselib
 		my_link_layer_address_ = radio().id();
 
 		my_address_ = radio_ip().id(); //ok
+
+		find_neighbors();
 		//my_global_address_ = radio_ip().global_id();
 
 		return SUCCESS;
@@ -771,7 +781,7 @@ namespace wiselib
 		//act_nd_storage = radio_ip().interface_manager_->get_nd_storage(0);
 				
 		
-		find_neighbors();
+		//find_neighbors();
 
 		//Every node is a 6LR in order to spread the address configuration all over the network;
 		//UNCOMMENT IF UNDERLYING ND IS USED, NO IF THE ADDRESS CONFIG IS MANAGED THROUGH DIOs
@@ -1016,14 +1026,10 @@ namespace wiselib
 	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
 	send_dio( node_id_t destination, uint16_t len, block_data_t *data )  
 	{
-
-		
 		dio_message_->set_transport_next_header( Radio_IP::ICMPV6 );
 		dio_message_->set_hop_limit(255);
 		
 		dio_message_->set_source_address(my_address_);
-
-
 		dio_message_->set_destination_address(destination);
 		dio_message_->set_flow_label(0);
 		dio_message_->set_traffic_class(0);
@@ -1085,7 +1091,6 @@ namespace wiselib
 		dis_message_->set_flow_label(0);
 		dis_message_->set_traffic_class(0);
 
-		
 		radio_ip().send( destination, len, data );
 	
 		return SUCCESS;
@@ -1182,11 +1187,10 @@ namespace wiselib
 	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
 	timer_elapsed( void* userdata )
 	{
-		
 		dio_count_ = 0;
 		if( !stop_timers_ )
 		{
-			
+		
 			if ( 2 * current_interval_ < max_interval_ )
 				set_current_interval(2); //double the interval
 			else
@@ -1207,14 +1211,16 @@ namespace wiselib
 			version_last_time_ = version_number_;
 
 			//A sort of ND compliant with RPL
-			if (count_timer_ >= 10)
+			if (count_timer_ >= 12)
 			{
-				//find_neighbors();  //To Update
+				
 				first_ETX_retry_ = true;
 				//to restart only when the neighbor update procedure is supposed to be finished (say 3 seconds)
 				stop_timers_ = true; 
 				timer().template set_timer<self_type, &self_type::update_timer_elapsed>( 3000, this, 0 );
 				update_neighborhood();
+				
+				//find_neighbors();  //find new neighbors???
 				count_timer_ = 0;
 			}
 			count_timer_ = count_timer_ + 1;
@@ -1268,6 +1274,39 @@ namespace wiselib
 	{
 		stop_timers_ = false;
 		timer().template set_timer<self_type, &self_type::timer_elapsed>( 1000, this, 0 );
+	}
+
+	// -----------------------------------------------------------------------
+	
+	template<typename OsModel_P,
+		typename Radio_IP_P,
+		typename Radio_P,
+		typename Debug_P,
+		typename Timer_P,
+		typename Clock_P>
+	void
+	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
+	find_neighbors_timer_elapsed( void* userdata )
+	{
+		//After 5 times the node is considered isolated!
+		if( !discovery_received_ && bcast_neigh_count_ < 5 )
+		{
+			#ifdef ROUTING_RPL_DEBUG
+			char str[43];
+			debug().debug( "\nRPL Routing: %s FIND NEIGHBORS AGAIN!!!\n", my_address_.get_address(str) );
+			#endif
+			find_neighbors();
+		}
+		else if(  bcast_neigh_count_ >=5 )
+		{
+			#ifdef ROUTING_RPL_DEBUG
+			char str[43];
+			debug().debug( "\nRPL Routing: NODE %s IS ISOLATED!\n", my_address_.get_address(str) );
+			#endif
+			bcast_neigh_count_ = 0;
+		}
+		else
+			bcast_neigh_count_ = 0;
 	}
 	
 	// -----------------------------------------------------------------------
@@ -1488,7 +1527,7 @@ namespace wiselib
 			else if( neigh_msg_type == 2 )
 			{
 				
-
+				discovery_received_ = true;
 				#ifdef ROUTING_RPL_DEBUG
 				debug().debug( "\nRPL Routing: I'm %s, ETX Request received from %s\n", my_address_.get_address(str), sender.get_address(str2) );
 				#endif
@@ -1512,11 +1551,21 @@ namespace wiselib
 						reverse = data[5];
 					else
 						reverse = it->second.etx_reverse;
+					map.etx_received = true;
+				}
+				else
+				{
+					//This could be a new node while the network is already active!
+					//...thus there's the need to compute the forward value
+					discovery_received_ = false;
+					reverse = data[5];
+					map.etx_received = false;
+					trigger_ETX_computation( sender.addr );
 				}
 				
 				map.bidirectionality = it->second.bidirectionality; //it is always not verified? NO!!!
 				neighbor_set_.erase( sender );
-				map.etx_received = true;
+				//map.etx_received = true;
 				map.etx_forward = forward;
 				map.etx_reverse = reverse;				
 		
@@ -2872,6 +2921,7 @@ namespace wiselib
 	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
 	find_neighbors()
 	{
+		bcast_neigh_count_ = bcast_neigh_count_ + 1;
 		#ifdef ROUTING_RPL_DEBUG
 		char str[43];
 		//debug().debug( "\nRPLRouting: Node: %s is finding neighbors \n", my_address_.get_address(str));
@@ -2905,6 +2955,7 @@ namespace wiselib
 
 		send( Radio_IP::BROADCAST_ADDRESS, num, NULL );
 		
+		timer().template set_timer<self_type, &self_type::find_neighbors_timer_elapsed>( 2200, this, 0 );
 
 		return SUCCESS;
 	}
