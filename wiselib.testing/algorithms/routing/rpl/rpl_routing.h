@@ -145,11 +145,15 @@ namespace wiselib
 		typedef wiselib::pair<node_id_t, node_id_t> rt_pair_t;
 		typedef typename wiselib::MapStaticVector<OsModel , node_id_t, node_id_t, 30>::iterator TransitTable_iterator;
 		*/		
-			
+		
+		//Probably I don't need it, I can use the sequence number in the forwarding table entry!!
+		
+		/*
 		typedef MapStaticVector<OsModel , node_id_t, uint8_t, 50> TargetSet; //Freshness of targets
 		typedef wiselib::pair<node_id_t, uint8_t> targ_pair_t;
 		typedef typename wiselib::MapStaticVector<OsModel , node_id_t, uint8_t, 50>::iterator TargetSet_iterator;
-
+		*/		
+		
 		typedef wiselib::ForwardingTableValue<Radio_IP> Forwarding_table_value;
 		typedef wiselib::pair<node_id_t, Forwarding_table_value> ft_pair_t;
 
@@ -542,7 +546,7 @@ namespace wiselib
 		//ETXValues ETX_values_;
 		//ETXReceived ETX_received_;
 
-		TargetSet target_set_;
+		//TargetSet target_set_;
 				
 		//Non-Storing Mode
 		//TransitTable transit_table_; // not used if MOP = 0 | 1
@@ -2058,7 +2062,27 @@ namespace wiselib
 				target.set_address(addr);
 				
 				//VERIFY FRESHNESS OF THE TARGET
-				uint8_t freshness = data[48];
+				//uint8_t freshness = data[48];
+				uint16_t seq_nr = (uint16_t)data[48];
+
+				ForwardingTableIterator it = radio_ip().routing_.forwarding_table_.find( target );
+				if( it != radio_ip().routing_.forwarding_table_.end() )
+				{
+					if ( seq_nr < it->second.seq_nr )
+					{
+						//Old DAO message, suppress
+						packet_pool_mgr_->clean_packet( message );
+						return;
+					}
+					else
+						it->second.seq_nr = seq_nr;
+				}
+				else
+				{
+					Forwarding_table_value entry( sender, 0, seq_nr, 0 );
+					radio_ip().routing_.forwarding_table_.insert( ft_pair_t( target, entry ) );
+				}
+				/*
 				TargetSet_iterator it = target_set_.find( target );
 				if ( it != target_set_.end() )
 				{
@@ -2068,12 +2092,13 @@ namespace wiselib
 						packet_pool_mgr_->clean_packet( message );
 						return;
 					}
-				}				
+				}
+				*/				
 				
 				//In this case sender is link-local, target is global
-				Forwarding_table_value entry( sender, 0, 0, 0 );
-				radio_ip().routing_.forwarding_table_.insert( ft_pair_t( target, entry ) );
-				target_set_.insert( targ_pair_t ( target, freshness) );
+				
+
+				
 
 				#ifdef ROUTING_RPL_DEBUG
 				char str3[43];
