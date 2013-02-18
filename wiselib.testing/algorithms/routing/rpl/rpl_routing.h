@@ -133,6 +133,7 @@ namespace wiselib
 			uint8_t current_version;
 			uint8_t grounded;
 			uint8_t metric_type;
+			//uint8_t dtsn;
 		};
 				
 		typedef MapStaticVector<OsModel , node_id_t,  Mapped_parent_set, PARENT_SET_SIZE> ParentSet;
@@ -344,6 +345,8 @@ namespace wiselib
 		void threshold_timer_elapsed( void *userdata );
 	
 		void floating_timer_elapsed( void *userdata );
+
+		void dao_timer_elapsed( void* userdata );
 
 		void ETX_timer_elapsed( void *userdata );
 		
@@ -563,7 +566,8 @@ namespace wiselib
 		node_id_t dodag_id_; //ID of the dodag's root (An IPv6 Address)
 
 		node_id_t preferred_parent_;
-		 	
+		 
+		uint8_t dtsn_;
 		bool stop_timers_; //used to stop the old timer and start the new one (see timer_elapsed function)
 		uint8_t count_timer_;
 
@@ -655,6 +659,7 @@ namespace wiselib
 		state_ (Unconnected),
 		dio_count_ (0),
 		bcast_neigh_count_ (0),
+		dtsn_ (0),
 		dao_sequence_ (0),
 		path_sequence_ (0),
 		version_last_time_ (0),
@@ -1282,6 +1287,27 @@ namespace wiselib
 
 	// -----------------------------------------------------------------------
 	
+	//TRICKLE TIMER ALSO FOR DAOs?
+	template<typename OsModel_P,
+		typename Radio_IP_P,
+		typename Radio_P,
+		typename Debug_P,
+		typename Timer_P,
+		typename Clock_P>
+	void
+	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
+	dao_timer_elapsed( void* userdata )
+	{
+		
+		if( !stop_timers_ )
+		{
+			send_dao( preferred_parent_, dao_reference_number_, NULL );
+			timer().template set_timer<self_type, &self_type::dao_timer_elapsed>( 2500 + current_interval_, this, 0 );
+		}
+	}
+
+	// -----------------------------------------------------------------------
+	
 	template<typename OsModel_P,
 		typename Radio_IP_P,
 		typename Radio_P,
@@ -1819,17 +1845,19 @@ namespace wiselib
 								update_dio( sender, parent_path_cost); 
 
 								//SEND DAO, Change the DaoSequenceNumber, PathSequence
-								//Invalidate the 
-								
+								//REMEMBER TO WRAP AROUND WHEN REACHING THE VALUE LIMIT
+																
 								dao_sequence_ = dao_sequence_ + 1;
 								dao_message_->template set_payload<uint8_t>( &dao_sequence_, 7, 1 );
 								path_sequence_ = path_sequence_ + 1;
 								dao_message_->template set_payload<uint8_t>( &path_sequence_, 48, 1 );
+								//DAO sent automatically thanks to the timer
+								/*					
 								if( mop_ == 1 )
 									send_dao( dodag_id_, dao_reference_number_, NULL );
 								else if( mop_ == 2 )
 									send_dao( preferred_parent_, dao_reference_number_, NULL );
-
+								*/
 							}
 							else
 							{
@@ -1874,17 +1902,21 @@ namespace wiselib
 								update_dio( sender, current_best_path_cost );
 								
 								//SEND DAO, Change the DaoSequenceNumber and PathSequence
-								//uint8_t dao_length;
-								//dao_length = prepare_dao();
-								//dao_message_->set_transport_length( dao_length );
+								//REMEMBER TO WRAP AROUND WHEN REACHING THE VALUE LIMIT
+								
+
 								dao_sequence_ = dao_sequence_ + 1;
 								dao_message_->template set_payload<uint8_t>( &dao_sequence_, 7, 1 );
 								path_sequence_ = path_sequence_ + 1;
 								dao_message_->template set_payload<uint8_t>( &path_sequence_, 48, 1 );
+								
+								//DAO sent automatically thanks to the timer
+								/*					
 								if( mop_ == 1 )
 									send_dao( dodag_id_, dao_reference_number_, NULL );
 								else if( mop_ == 2 )
 									send_dao( preferred_parent_, dao_reference_number_, NULL );
+								*/
 							}
 							else
 							{
@@ -1923,19 +1955,22 @@ namespace wiselib
 								//NEW PREFERRED PARENT
 								update_dio( sender, current_best_path_cost);
 
-								//SEND DAO, NO NEED TO PREPARE IT.. BUT CHANGE THE DaoSequenceNumber
-								//uint8_t dao_length;
-								//dao_length = prepare_dao();
-								//dao_message_->set_transport_length( dao_length );
+								//SEND DAO, Change the DaoSequenceNumber and PathSequence
+								//REMEMBER TO WRAP AROUND WHEN REACHING THE VALUE LIMIT
+								
 							
 								dao_sequence_ = dao_sequence_ + 1;
 								dao_message_->template set_payload<uint8_t>( &dao_sequence_, 7, 1 );
 								path_sequence_ = path_sequence_ + 1;
 								dao_message_->template set_payload<uint8_t>( &path_sequence_, 48, 1 );
+								
+								//DAO sent automatically thanks to the timer
+								/*
 								if( mop_ == 1 )
 									send_dao( dodag_id_, dao_reference_number_, NULL );
 								else if( mop_ == 2 )
 									send_dao( preferred_parent_, dao_reference_number_, NULL );
+								*/
 							}
 							else
 							{
@@ -2239,15 +2274,6 @@ namespace wiselib
 			//send_dao( dodag_id_, dao_reference_number_, NULL );
 			//unicast dao and start timer counting the number of transmission
 		
-		//I have to send DAOs only after having computed the ETX value
-		if( mop_ == 2 )
-		{
-			uint8_t dao_length;
-			dao_length = prepare_dao();
-			dao_message_->set_transport_length( dao_length );
-			send_dao( preferred_parent_, dao_reference_number_, NULL );
-		}
-		
 		//THE DIO MESSAGE LENGTH HAS TO BE SET HERE
 		dio_message_->set_transport_length( length );
 		
@@ -2272,6 +2298,15 @@ namespace wiselib
 		//timer after which I need to send the DIO message
 		timer().template set_timer<self_type, &self_type::threshold_timer_elapsed>( sending_threshold_, this, 0 );
 		
+		//I have to send DAOs only after having computed the ETX value
+		if( mop_ == 2 )
+		{
+			uint8_t dao_length;
+			dao_length = prepare_dao();
+			dao_message_->set_transport_length( dao_length );
+			//send_dao( preferred_parent_, dao_reference_number_, NULL );
+			timer().template set_timer<self_type, &self_type::dao_timer_elapsed>( 500, this, 0 );
+		}
 	}
 	
 	// -----------------------------------------------------------------------
@@ -3062,10 +3097,13 @@ namespace wiselib
 				dao_message_->template set_payload<uint8_t>( &dao_sequence_, 7, 1 );
 				path_sequence_ = path_sequence_ + 1;
 				dao_message_->template set_payload<uint8_t>( &path_sequence_, 48, 1 );
+				//dao sent automatically thanks to the timer				
+				/*				
 				if( mop_ == 1 )
 					send_dao( dodag_id_, dao_reference_number_, NULL );
 				else if( mop_ == 2 )
 					send_dao( preferred_parent_, dao_reference_number_, NULL );
+				*/
 				return 0;
 			}
 		}
@@ -3387,6 +3425,8 @@ namespace wiselib
 						//DEST UNREACHABLE... WHAT SHOULD I DO? UNICAST MESSAGE TO THE SENDER WITH ERROR CODE??...
 						//.. MAYBE JUST DRP THE PACKET
 						//FIRST CHECK IF THE DESTINATION IS OUTSIDE THE DODAG, IF SO THE PACKET MUST BE FORWARDED OUTSIDE
+
+						//INCREMENT DTSN?
 			
 						return  Radio_IP::DROP_PACKET;
 					}
@@ -3451,7 +3491,11 @@ namespace wiselib
 							debug().debug( "\nRPL Routing: INTERMEDIATE NODE 1st, Forwarding Error\n" );
 							#endif
 							//FIRST DOWN, THEN UP ===> BACK TO THE SENDER WITH FORWARDING ERROR (RFC 6550, pag 104)
-														
+							//the sender is the preferred parent...							
+							//Increment DTSN? ...
+							//... In storing mode it wouldn't work if the destination is more than 1 hop away..
+							//... send a DIS to the root? 							
+													
 							//For now just DROP THE PACKET
 							return Radio_IP::DROP_PACKET;
 						}
@@ -3460,6 +3504,12 @@ namespace wiselib
 						{
 							//CANNOT GO UP AGAIN, I'M THE ROOT
 							//DESTINATION UNREACHABLE... WHAT SHOULD I DO?
+							//Increment DTSN in order to trigger DAO Updates! ...
+							//... In storing mode it wouldn't work if the destination is more than 1 hop away
+							//Change the version number, I can do it since I'm the root
+							version_number_ = version_number_ + 1;
+							dio_message_->template set_payload<uint8_t>( &version_number_, 5, 1 );
+
 							return  Radio_IP::DROP_PACKET;
 						}
 							
