@@ -596,6 +596,8 @@ namespace wiselib
 
 		bool prefix_present_;
 
+		bool dao_ack_received_;
+
 		uint16_t best_path_cost_; //Initialize it
 		uint16_t cur_min_path_cost_; //path cost of the current preferred parent (RFC 6719, sect. 3.2), to allow hysteresis
 						
@@ -656,6 +658,7 @@ namespace wiselib
 		etx_ (true),
 		first_ETX_retry_ (false),
 		discovery_received_ (false),
+		dao_ack_received_ (false),
 		state_ (Unconnected),
 		dio_count_ (0),
 		bcast_neigh_count_ (0),
@@ -1299,7 +1302,7 @@ namespace wiselib
 	dao_timer_elapsed( void* userdata )
 	{
 		
-		if( !stop_timers_ )
+		if( !dao_ack_received_ && !stop_timers_ )
 		{
 			send_dao( preferred_parent_, dao_reference_number_, NULL );
 			timer().template set_timer<self_type, &self_type::dao_timer_elapsed>( 2500 + current_interval_, this, 0 );
@@ -1846,7 +1849,8 @@ namespace wiselib
 
 								//SEND DAO, Change the DaoSequenceNumber, PathSequence
 								//REMEMBER TO WRAP AROUND WHEN REACHING THE VALUE LIMIT
-																
+											
+								dao_ack_received_ = false;					
 								dao_sequence_ = dao_sequence_ + 1;
 								dao_message_->template set_payload<uint8_t>( &dao_sequence_, 7, 1 );
 								path_sequence_ = path_sequence_ + 1;
@@ -1904,7 +1908,7 @@ namespace wiselib
 								//SEND DAO, Change the DaoSequenceNumber and PathSequence
 								//REMEMBER TO WRAP AROUND WHEN REACHING THE VALUE LIMIT
 								
-
+								dao_ack_received_ = false;
 								dao_sequence_ = dao_sequence_ + 1;
 								dao_message_->template set_payload<uint8_t>( &dao_sequence_, 7, 1 );
 								path_sequence_ = path_sequence_ + 1;
@@ -1958,7 +1962,7 @@ namespace wiselib
 								//SEND DAO, Change the DaoSequenceNumber and PathSequence
 								//REMEMBER TO WRAP AROUND WHEN REACHING THE VALUE LIMIT
 								
-							
+								dao_ack_received_ = false;
 								dao_sequence_ = dao_sequence_ + 1;
 								dao_message_->template set_payload<uint8_t>( &dao_sequence_, 7, 1 );
 								path_sequence_ = path_sequence_ + 1;
@@ -2141,7 +2145,24 @@ namespace wiselib
 				#endif
 				if( state_ == Dodag_root || state_ == Floating_Dodag_root )
 				{
-					packet_pool_mgr_->clean_packet( message );
+					//unicast dao_ack to the target, using the same message
+					//set dao_sequence in the right field of the DAO_ACK
+					uint8_t setter_byte = DEST_ADVERT_OBJECT_ACK;
+					message->template set_payload<uint8_t>( &setter_byte, 1, 1 );
+					setter_byte = data[7];
+					message->template set_payload<uint8_t>( &setter_byte, 6, 1 );
+					setter_byte = 0;
+					message->template set_payload<uint8_t>( &setter_byte, 5, 1 );
+					message->template set_payload<uint8_t>( &setter_byte, 7, 1 );
+					
+					message->set_transport_length( 8 );
+					message->remote_ll_address = Radio_P::NULL_NODE_ID;
+					message->target_interface = NUMBER_OF_INTERFACES;
+					message->set_source_address(my_global_address_);
+
+					send( target, packet_number, NULL ); 				
+		
+					//packet_pool_mgr_->clean_packet( message );
 					return;
 				}			
 
@@ -2158,7 +2179,17 @@ namespace wiselib
 		}
 		else if( typecode == DEST_ADVERT_OBJECT_ACK )
 		{
-			//Don't need it for the moment
+			uint8_t rcvd_dao_sequence = data[6];
+			if( rcvd_dao_sequence == dao_sequence_ )
+			{
+				#ifdef ROUTING_RPL_DEBUG
+				char str3[43];
+				debug().debug( "\nRPL Routing: %s Received DAO-ACK! STOP DAO TIMER...\n", my_address_.get_address(str) );
+				#endif
+				dao_ack_received_ = true;
+			}
+			packet_pool_mgr_->clean_packet( message );
+			return;
 		}
 		
 		packet_pool_mgr_->clean_packet( message );
@@ -2301,11 +2332,12 @@ namespace wiselib
 		//I have to send DAOs only after having computed the ETX value
 		if( mop_ == 2 )
 		{
+			dao_ack_received_ = false;
 			uint8_t dao_length;
 			dao_length = prepare_dao();
 			dao_message_->set_transport_length( dao_length );
 			//send_dao( preferred_parent_, dao_reference_number_, NULL );
-			timer().template set_timer<self_type, &self_type::dao_timer_elapsed>( 500, this, 0 );
+			timer().template set_timer<self_type, &self_type::dao_timer_elapsed>( 300 + current_interval_, this, 0 );
 		}
 	}
 	
@@ -3092,7 +3124,8 @@ namespace wiselib
 				//uint8_t dao_length;
 				//dao_length = prepare_dao();
 				//dao_message_->set_transport_length( dao_length );
-							
+					
+				dao_ack_received_ = false;		
 				dao_sequence_ = dao_sequence_ + 1;
 				dao_message_->template set_payload<uint8_t>( &dao_sequence_, 7, 1 );
 				path_sequence_ = path_sequence_ + 1;
