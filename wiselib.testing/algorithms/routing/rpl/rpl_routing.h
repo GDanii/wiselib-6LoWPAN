@@ -389,6 +389,8 @@ namespace wiselib
 		void update_dio( node_id_t parent, uint16_t path_cost );
 
 		void update_neighborhood();
+		
+		void find_worst_parent();
 
 		uint8_t delete_neighbor( node_id_t neighbor );
 
@@ -566,6 +568,8 @@ namespace wiselib
 		node_id_t dodag_id_; //ID of the dodag's root (An IPv6 Address)
 
 		node_id_t preferred_parent_;
+
+		node_id_t worst_parent_;
 		 
 		uint8_t dtsn_;
 		bool stop_timers_; //used to stop the old timer and start the new one (see timer_elapsed function)
@@ -679,6 +683,7 @@ namespace wiselib
 		min_hop_rank_increase_ (DEFAULT_MIN_HOP_RANK_INCREASE),
 		DAGMaxRankIncrease_ ( 0 ), //0 means disabled
 		preferred_parent_ ( Radio_IP::NULL_NODE_ID ),
+		worst_parent_ ( Radio_IP::NULL_NODE_ID ),
 		best_path_cost_ (0xFFFF)
 	{}
 	// -----------------------------------------------------------------------
@@ -1301,11 +1306,11 @@ namespace wiselib
 	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
 	dao_timer_elapsed( void* userdata )
 	{
-		
+		//this timer must be directly proportional to the rank when no aggregation is not supported (rank_*100 + something??) 
 		if( !dao_ack_received_ && !stop_timers_ )
 		{
 			send_dao( preferred_parent_, dao_reference_number_, NULL );
-			timer().template set_timer<self_type, &self_type::dao_timer_elapsed>( 2500 + current_interval_, this, 0 );
+			timer().template set_timer<self_type, &self_type::dao_timer_elapsed>( ( rank_ * 100 ) + 500, this, 0 );
 		}
 	}
 
@@ -1792,9 +1797,12 @@ namespace wiselib
 							NeighborSet_iterator it = neighbor_set_.find( preferred_parent_ );
 							if( it == neighbor_set_.end() )
 							{
+								//Is it Unreachable?
 								#ifdef ROUTING_RPL_DEBUG
 								debug().debug( "\n\nRPL Routing: ENTRY NOT PRESENT!!!!??????\n\n" );
 								#endif
+								packet_pool_mgr_->clean_packet( message );
+								return;	
 							}
 				
 							float forward = 1/((float)it->second.etx_forward);
@@ -1807,6 +1815,16 @@ namespace wiselib
 						}
 						else
 						{
+							NeighborSet_iterator it = neighbor_set_.find( preferred_parent_ );
+							if( it == neighbor_set_.end() )
+							{
+								//Is it Unreachable?
+								#ifdef ROUTING_RPL_DEBUG
+								debug().debug( "\n\nRPL Routing: ENTRY NOT PRESENT!!!!??????\n\n" );
+								#endif
+								packet_pool_mgr_->clean_packet( message );
+								return;	
+							}
 							rank_inc = step_of_rank_ * min_hop_rank_increase_; 
 							parent_path_cost = parent_rank + rank_inc;
 						}
@@ -1839,14 +1857,34 @@ namespace wiselib
 						if (it == parent_set_.end())
 						{
 							map.path_cost = parent_path_cost;
+							//WHAT IF THE PARENT SET IS FULL?
+							if( parent_set_.size() == parent_set_.max_size() )
+							{
+								//delete the worst entry only if it is even worst than this parent...
+								//... otherwise return
+								ParentSet_iterator it_worst = parent_set_.find( worst_parent_ );
+								if( it_worst->second.path_cost > parent_path_cost )
+								{
+									parent_set_.erase( worst_parent_ );
+									find_worst_parent();
+								}
+								else
+								{
+									packet_pool_mgr_->clean_packet( message );
+									return;	
+								}
+							}
 							parent_set_.insert( pair_t( sender, map ) );
+
+							find_worst_parent();
 							//check if it is beter than the preferred parent, if so trigger update
-							//and delete parents whose rank is higher now!!!!!!!
+							//and delete parents whose rank is higher now!
+							
 							if( parent_path_cost < best_path_cost_ )
 							{	
 								//should I stop the timers??? NO JUST CHANGE THE VALUES IN DIO MESSAGE
 								update_dio( sender, parent_path_cost); 
-
+									
 								//SEND DAO, Change the DaoSequenceNumber, PathSequence
 								//REMEMBER TO WRAP AROUND WHEN REACHING THE VALUE LIMIT
 											
@@ -1856,12 +1894,7 @@ namespace wiselib
 								path_sequence_ = path_sequence_ + 1;
 								dao_message_->template set_payload<uint8_t>( &path_sequence_, 48, 1 );
 								//DAO sent automatically thanks to the timer
-								/*					
-								if( mop_ == 1 )
-									send_dao( dodag_id_, dao_reference_number_, NULL );
-								else if( mop_ == 2 )
-									send_dao( preferred_parent_, dao_reference_number_, NULL );
-								*/
+								
 							}
 							else
 							{
@@ -1905,6 +1938,7 @@ namespace wiselib
 								//BUT WITH FIRST_DIO THE PARENT SET IS CLEARED!!!!
 								update_dio( sender, current_best_path_cost );
 								
+								find_worst_parent();
 								//SEND DAO, Change the DaoSequenceNumber and PathSequence
 								//REMEMBER TO WRAP AROUND WHEN REACHING THE VALUE LIMIT
 								
@@ -1913,18 +1947,13 @@ namespace wiselib
 								dao_message_->template set_payload<uint8_t>( &dao_sequence_, 7, 1 );
 								path_sequence_ = path_sequence_ + 1;
 								dao_message_->template set_payload<uint8_t>( &path_sequence_, 48, 1 );
-								
 								//DAO sent automatically thanks to the timer
-								/*					
-								if( mop_ == 1 )
-									send_dao( dodag_id_, dao_reference_number_, NULL );
-								else if( mop_ == 2 )
-									send_dao( preferred_parent_, dao_reference_number_, NULL );
-								*/
+								
 							}
 							else
 							{
-								//NOT SIGNIFICANT UPDATE
+								//if( parent_path_cost > rank_ ) //impossible
+								find_worst_parent();
 								packet_pool_mgr_->clean_packet( message );
 								return;	
 							}
@@ -1933,10 +1962,11 @@ namespace wiselib
 
 					else
 					{	
-						//parent_rank > rank
+						//parent_path_cost > rank
 						//delete parent from the parent set
 						parent_set_.erase( sender );
 						
+						find_worst_parent();
 						if ( sender == preferred_parent_ ) //Here more complex
 						{	
 							if ( !parent_set_.empty() )
@@ -1967,21 +1997,14 @@ namespace wiselib
 								dao_message_->template set_payload<uint8_t>( &dao_sequence_, 7, 1 );
 								path_sequence_ = path_sequence_ + 1;
 								dao_message_->template set_payload<uint8_t>( &path_sequence_, 48, 1 );
-								
 								//DAO sent automatically thanks to the timer
-								/*
-								if( mop_ == 1 )
-									send_dao( dodag_id_, dao_reference_number_, NULL );
-								else if( mop_ == 2 )
-									send_dao( preferred_parent_, dao_reference_number_, NULL );
-								*/
 							}
 							else
 							{
 								//IT Seems that it works, make it more robust anyway 
-								
 								if (mop_set_)
 								{
+									worst_parent_ = Radio_IP::NULL_NODE_ID;
 									#ifdef ROUTING_RPL_DEBUG
 									debug().debug( "\nRPLRouting: NO MORE PARENTS, ADVERTISE INFINITE RANK\n" );
 									#endif
@@ -2662,8 +2685,9 @@ namespace wiselib
 				map.metric_type = 0; //to verify the real metric type
 			}
 		}	
-		//First DIO, the parent is preferred						
+		//First DIO, the parent is preferred... and also the worst						
 		preferred_parent_ = from; 
+		worst_parent_ = from;
 		parent_set_.insert( pair_t( from, map ) );
 		//ADD default route
 		Forwarding_table_value entry( preferred_parent_, 0, 0, 0 );
@@ -2704,9 +2728,7 @@ namespace wiselib
 		dodag_id_.set_address(addr);
 		
 		dio_message_->template set_payload<uint8_t[16]>( &dodag_id_.addr, 12, 1 ); //CON 1 alla fine funziona
-		
-				
-		
+	
 	}
 
 	// -----------------------------------------------------------------------
@@ -3076,6 +3098,7 @@ namespace wiselib
 		else
 			parent_set_.erase( neighbor );
 
+		find_worst_parent();
 		//what if it was a preferred parent? If not I can go on, since there's at least an entry in the parent_set
 		if( neighbor == preferred_parent_ )
 		{
@@ -3142,7 +3165,31 @@ namespace wiselib
 		}
 		return 0;
 	}
-
+	// -----------------------------------------------------------------------
+	
+	template<typename OsModel_P,
+		typename Radio_IP_P,
+		typename Radio_P,
+		typename Debug_P,
+		typename Timer_P,
+		typename Clock_P>
+	void
+	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
+	find_worst_parent()
+	{
+		//for each neighbor verify again ETX
+		uint16_t current_worst_path_cost = 0;
+		for (ParentSet_iterator it = parent_set_.begin(); it != parent_set_.end(); it++)
+		{
+			if ( it->second.path_cost > current_worst_path_cost )
+			{
+				current_worst_path_cost = it->second.path_cost;
+				worst_parent_ = it->first;
+			}
+		}
+		if( current_worst_path_cost == 0 )
+			worst_parent_ = Radio_IP::NULL_NODE_ID;
+	}
 	// -----------------------------------------------------------------------
 	
 	template<typename OsModel_P,
