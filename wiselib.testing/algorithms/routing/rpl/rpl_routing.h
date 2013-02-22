@@ -247,6 +247,7 @@ namespace wiselib
 		* All-RPL-nodes multicast address: FF02:0:0:0:0:0:0:1A  TO UPDATE IN IPv6 Class
 		*/
 		static const node_id_t ALL_RPL_NODES_MULTICAST_ADDRESS;
+
 		// --------------------------------------------------------------------
 		enum Restrictions {
 			MAX_MESSAGE_LENGTH = Radio_IP::MAX_MESSAGE_LENGTH - 4  ///< Maximal number of bytes in payload
@@ -375,6 +376,8 @@ namespace wiselib
 		uint8_t options_check( block_data_t *data, uint16_t length_checked, uint16_t length, node_id_t sender );
 		
 		void set_firsts_dio_fields( node_id_t from, block_data_t *data );
+	
+		void send_no_path_dao();
 
 		uint8_t start();
 		
@@ -559,6 +562,7 @@ namespace wiselib
 		IPv6Packet_t* dio_message_;
 		IPv6Packet_t* dis_message_;
 		IPv6Packet_t* dao_message_;
+		IPv6Packet_t* no_path_dao_;
 
 		link_layer_node_id_t my_link_layer_address_;		
 	
@@ -602,7 +606,7 @@ namespace wiselib
 
 		bool dao_ack_received_;
 
-		uint16_t best_path_cost_; //Initialize it
+		//uint16_t best_path_cost_; //Initialize it
 		uint16_t cur_min_path_cost_; //path cost of the current preferred parent (RFC 6719, sect. 3.2), to allow hysteresis
 						
 		//A global RPLInstanceID must be unique to the whole LLN!
@@ -632,6 +636,7 @@ namespace wiselib
 		uint8_t dio_reference_number_;
 		uint8_t dis_reference_number_;
 		uint8_t dao_reference_number_;
+		uint8_t no_path_reference_number_;
 		
 	};
 	// -----------------------------------------------------------------------
@@ -684,7 +689,8 @@ namespace wiselib
 		DAGMaxRankIncrease_ ( 0 ), //0 means disabled
 		preferred_parent_ ( Radio_IP::NULL_NODE_ID ),
 		worst_parent_ ( Radio_IP::NULL_NODE_ID ),
-		best_path_cost_ (0xFFFF)
+		//best_path_cost_ (0xFFFF)
+		cur_min_path_cost_ (0xFFFF)
 	{}
 	// -----------------------------------------------------------------------
 	template<typename OsModel_P,
@@ -744,9 +750,14 @@ namespace wiselib
 		if( dao_reference_number_ == Packet_Pool_Mgr_t::NO_FREE_PACKET )
 			return ERR_UNSPEC;
 
+		no_path_reference_number_ = packet_pool_mgr_->get_unused_packet_with_number();
+		if( no_path_reference_number_ == Packet_Pool_Mgr_t::NO_FREE_PACKET )
+			return ERR_UNSPEC;
+
 		dio_message_ = packet_pool_mgr_->get_packet_pointer( dio_reference_number_ );
 		dis_message_ = packet_pool_mgr_->get_packet_pointer( dis_reference_number_ );
 		dao_message_ = packet_pool_mgr_->get_packet_pointer( dao_reference_number_ );
+		no_path_dao_ = packet_pool_mgr_->get_packet_pointer( no_path_reference_number_ );
 		
 		callback_id_ = radio_ip().template reg_recv_callback<self_type, &self_type::receive>( this );
 
@@ -883,12 +894,14 @@ namespace wiselib
 		dio_message_->template set_payload<uint8_t>( &setter_byte, 0, 1 );
 		dis_message_->template set_payload<uint8_t>( &setter_byte, 0, 1 );
 		dao_message_->template set_payload<uint8_t>( &setter_byte, 0, 1 );
+		no_path_dao_->template set_payload<uint8_t>( &setter_byte, 0, 1 );
 		setter_byte = DODAG_INF_OBJECT;
 		dio_message_->template set_payload<uint8_t>( &setter_byte, 1, 1 );
 		setter_byte = DODAG_INF_SOLICIT;
 		dis_message_->template set_payload<uint8_t>( &setter_byte, 1, 1 );
 		setter_byte = DEST_ADVERT_OBJECT;
 		dao_message_->template set_payload<uint8_t>( &setter_byte, 1, 1 );
+		no_path_dao_->template set_payload<uint8_t>( &setter_byte, 1, 1 );
 
 		//set timer in order for nodes to wait ND to configure their gloabal addresses
 		//Increase the timer delay if ND is used
@@ -1658,8 +1671,6 @@ namespace wiselib
 			return;
 		}
 		
-		
-		//To move in first DIO?
 		if ( typecode == DODAG_INF_OBJECT && mop_set_ )
 		{
 			
@@ -1723,7 +1734,7 @@ namespace wiselib
 			{
 
 				uint16_t check_rank = ( data[6] << 8 ) | data[7];
-				if( check_rank == INFINITE_RANK )
+				if( check_rank == INFINITE_RANK || check_rank > MAX_PATH_COST )
 				{
 					parent_set_.erase( sender );
 					if ( parent_set_.empty() )
@@ -1733,7 +1744,7 @@ namespace wiselib
 						state_ = Unconnected;
 						preferred_parent_ = Radio_IP::NULL_NODE_ID;
 						dio_message_->template set_payload<uint16_t>( &rank_, 6, 1 );
-	
+						//advertise infinite rank
 						send_dio( Radio_IP::BROADCAST_ADDRESS, dio_reference_number_, NULL );  
 
 						//STOP TIMERS?
@@ -1794,7 +1805,7 @@ namespace wiselib
 						if( etx_ )
 						{
 				
-							NeighborSet_iterator it = neighbor_set_.find( preferred_parent_ );
+							NeighborSet_iterator it = neighbor_set_.find( sender );
 							if( it == neighbor_set_.end() )
 							{
 								//Is it Unreachable?
@@ -1815,7 +1826,7 @@ namespace wiselib
 						}
 						else
 						{
-							NeighborSet_iterator it = neighbor_set_.find( preferred_parent_ );
+							NeighborSet_iterator it = neighbor_set_.find( sender );
 							if( it == neighbor_set_.end() )
 							{
 								//Is it Unreachable?
@@ -1880,14 +1891,15 @@ namespace wiselib
 							//check if it is beter than the preferred parent, if so trigger update
 							//and delete parents whose rank is higher now!
 							
-							if( parent_path_cost < best_path_cost_ )
+							if( parent_path_cost < cur_min_path_cost_ )
 							{	
 								//should I stop the timers??? NO JUST CHANGE THE VALUES IN DIO MESSAGE
 								update_dio( sender, parent_path_cost); 
 									
 								//SEND DAO, Change the DaoSequenceNumber, PathSequence
 								//REMEMBER TO WRAP AROUND WHEN REACHING THE VALUE LIMIT
-											
+								//FIRST SEND NO PATH DAO to the old preferred parent
+
 								dao_ack_received_ = false;					
 								dao_sequence_ = dao_sequence_ + 1;
 								dao_message_->template set_payload<uint8_t>( &dao_sequence_, 7, 1 );
@@ -1912,6 +1924,7 @@ namespace wiselib
 
 							if ( sender == preferred_parent_ )
 							{	
+								send_no_path_dao();
 								#ifdef ROUTING_RPL_DEBUG
 								debug().debug( "\nRPLRouting: CHANGE RANK. FINDING NEW PREFERRED PARENT\n" );
 								#endif
@@ -1941,6 +1954,7 @@ namespace wiselib
 								find_worst_parent();
 								//SEND DAO, Change the DaoSequenceNumber and PathSequence
 								//REMEMBER TO WRAP AROUND WHEN REACHING THE VALUE LIMIT
+								//FIRST SEND NO PATH DAO to the old preferred parent
 								
 								dao_ack_received_ = false;
 								dao_sequence_ = dao_sequence_ + 1;
@@ -1965,10 +1979,14 @@ namespace wiselib
 						//parent_path_cost > rank
 						//delete parent from the parent set
 						parent_set_.erase( sender );
-						
+						ForwardingTableIterator it_parent = radio_ip().routing_.forwarding_table_.find( sender );
+						radio_ip().routing_.forwarding_table_.erase( it_parent );
+
 						find_worst_parent();
 						if ( sender == preferred_parent_ ) //Here more complex
 						{	
+							send_no_path_dao();
+
 							if ( !parent_set_.empty() )
 							{
 								#ifdef ROUTING_RPL_DEBUG
@@ -1991,7 +2009,7 @@ namespace wiselib
 
 								//SEND DAO, Change the DaoSequenceNumber and PathSequence
 								//REMEMBER TO WRAP AROUND WHEN REACHING THE VALUE LIMIT
-								
+															
 								dao_ack_received_ = false;
 								dao_sequence_ = dao_sequence_ + 1;
 								dao_message_->template set_payload<uint8_t>( &dao_sequence_, 7, 1 );
@@ -2122,7 +2140,7 @@ namespace wiselib
 					
 				node_id_t target;
 				target.set_address(addr);
-				
+
 				//VERIFY FRESHNESS OF THE TARGET
 				//uint8_t freshness = data[48];
 				uint16_t seq_nr = (uint16_t)data[48];
@@ -2130,71 +2148,72 @@ namespace wiselib
 				ForwardingTableIterator it = radio_ip().routing_.forwarding_table_.find( target );
 				if( it != radio_ip().routing_.forwarding_table_.end() )
 				{
-					if ( seq_nr < it->second.seq_nr )
+					if ( data[49] == 0 )
+					{
+						radio_ip().routing_.forwarding_table_.erase( it );
+					}
+		
+					else if ( seq_nr < it->second.seq_nr )
 					{
 						//Old DAO message, suppress
 						packet_pool_mgr_->clean_packet( message );
 						return;
 					}
 					else
+					{
+						it->second.next_hop = sender;
 						it->second.seq_nr = seq_nr;
+					}
 				}
 				else
 				{
 					Forwarding_table_value entry( sender, 0, seq_nr, 0 );
 					radio_ip().routing_.forwarding_table_.insert( ft_pair_t( target, entry ) );
 				}
-				/*
-				TargetSet_iterator it = target_set_.find( target );
-				if ( it != target_set_.end() )
-				{
-					if ( freshness < it->second )
-					{
-						//Old DAO message, suppress
-						packet_pool_mgr_->clean_packet( message );
-						return;
-					}
-				}
-				*/				
-				
-				//In this case sender is link-local, target is global
-				
-
-				
+								
 
 				#ifdef ROUTING_RPL_DEBUG
 				char str3[43];
 				debug().debug( "\nRPL Routing: %s Received DAO with target: %s, next_hop: %s\n", my_address_.get_address(str), target.get_address(str2), sender.get_address(str3) );
 				#endif
+
 				if( state_ == Dodag_root || state_ == Floating_Dodag_root )
 				{
-					//unicast dao_ack to the target, using the same message
-					//set dao_sequence in the right field of the DAO_ACK
-					uint8_t setter_byte = DEST_ADVERT_OBJECT_ACK;
-					message->template set_payload<uint8_t>( &setter_byte, 1, 1 );
-					setter_byte = data[7];
-					message->template set_payload<uint8_t>( &setter_byte, 6, 1 );
-					setter_byte = 0;
-					message->template set_payload<uint8_t>( &setter_byte, 5, 1 );
-					message->template set_payload<uint8_t>( &setter_byte, 7, 1 );
+					if( data[5] == 128 )
+					{
+						//unicast dao_ack to the target, using the same message
+						//set dao_sequence in the right field of the DAO_ACK
+						uint8_t setter_byte = DEST_ADVERT_OBJECT_ACK;
+						message->template set_payload<uint8_t>( &setter_byte, 1, 1 );
+						setter_byte = data[7];
+						message->template set_payload<uint8_t>( &setter_byte, 6, 1 );
+						setter_byte = 0;
+						message->template set_payload<uint8_t>( &setter_byte, 5, 1 );
+						message->template set_payload<uint8_t>( &setter_byte, 7, 1 );
 					
-					message->set_transport_length( 8 );
+						message->set_transport_length( 8 );
+						message->remote_ll_address = Radio_P::NULL_NODE_ID;
+						message->target_interface = NUMBER_OF_INTERFACES;
+						message->set_source_address(my_global_address_);
+
+						send( target, packet_number, NULL ); 
+						return;				
+					}
+					else
+					{
+						packet_pool_mgr_->clean_packet( message );
+						return;
+					}
+				}			
+				else
+				{
 					message->remote_ll_address = Radio_P::NULL_NODE_ID;
 					message->target_interface = NUMBER_OF_INTERFACES;
-					message->set_source_address(my_global_address_);
+					//now send this message to the preferred parent... or all the DAO parants?
+					message->set_source_address(my_address_);
 
-					send( target, packet_number, NULL ); 				
-		
-					//packet_pool_mgr_->clean_packet( message );
-					return;
-				}			
-
-				message->remote_ll_address = Radio_P::NULL_NODE_ID;
-				message->target_interface = NUMBER_OF_INTERFACES;
-				//now send this message to the preferred parent... or all the DAO parants?
-				message->set_source_address(my_address_);
-
-				send( preferred_parent_, packet_number, NULL ); 
+					send( preferred_parent_, packet_number, NULL );
+				} 
 				
 				return;
 				
@@ -2631,9 +2650,9 @@ namespace wiselib
 		if (ocp_ == 0 )
 		{
 			rank_increase_ = ((rank_factor_ * step_of_rank_) + rank_stretch_ ) * min_hop_rank_increase_;
-			best_path_cost_ = parent_rank + rank_increase_;
-			rank_ = best_path_cost_;
-			map.path_cost = best_path_cost_;
+			cur_min_path_cost_ = parent_rank + rank_increase_;
+			rank_ = cur_min_path_cost_;
+			map.path_cost = cur_min_path_cost_;
 			map.metric_type = 0;
 			
 		}
@@ -2663,8 +2682,8 @@ namespace wiselib
 				#endif
 				
 				rank_ = increase_rank( parent_rank, rank_increase_ );
-				best_path_cost_ = rank_;
-				map.path_cost = best_path_cost_;
+				cur_min_path_cost_ = rank_;
+				map.path_cost = cur_min_path_cost_;
 				map.metric_type = LINK_ETX;
 			
 				#ifdef ROUTING_RPL_DEBUG
@@ -2679,9 +2698,9 @@ namespace wiselib
 			else
 			{
 				rank_increase_ = step_of_rank_ * min_hop_rank_increase_; 
-				best_path_cost_ = parent_rank + rank_increase_;
-				rank_ = best_path_cost_;
-				map.path_cost = best_path_cost_;
+				cur_min_path_cost_ = parent_rank + rank_increase_;
+				rank_ = cur_min_path_cost_;
+				map.path_cost = cur_min_path_cost_;
 				map.metric_type = 0; //to verify the real metric type
 			}
 		}	
@@ -3224,8 +3243,8 @@ namespace wiselib
 	{
 		//Here starts to fill RPL fields
 		dao_message_->template set_payload<uint8_t>( &rpl_instance_id_, 4, 1 );
-		//0(no dao-ack) 0(global RPL instance ID is used) 000000(default flags) = 0;
-		uint8_t setter_byte = 0;
+		//1(with dao-ack) 0(global RPL instance ID is used) 000000(default flags) = 128;
+		uint8_t setter_byte = 128;
 		dao_message_->template set_payload<uint8_t>( &setter_byte, 5, 1 );
 		//Reserved ( default 0 )
 		dao_message_->template set_payload<uint8_t>( &setter_byte, 6, 1 );
@@ -3295,6 +3314,89 @@ namespace wiselib
 		typename Debug_P,
 		typename Timer_P,
 		typename Clock_P>
+	void
+	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
+	send_no_path_dao()
+	{
+		/* IT DOESN'T WORK FOR THE MOMENT
+		//Here starts to fill RPL fields
+		no_path_dao_->template set_payload<uint8_t>( &rpl_instance_id_, 4, 1 );
+		//1(with dao-ack) 0(global RPL instance ID is used) 000000(default flags) = 0; //128 when ready
+		uint8_t setter_byte = 0;
+		no_path_dao_->template set_payload<uint8_t>( &setter_byte, 5, 1 );
+		//Reserved ( default 0 )
+		no_path_dao_->template set_payload<uint8_t>( &setter_byte, 6, 1 );
+		//dao sequence number, incremented each time a DAO is sent
+		//used to correlate a DAO message and a DAO_ACK message		
+		no_path_dao_->template set_payload<uint8_t>( &dao_sequence_, 7, 1 );
+		
+		//DODAG_ID field not present because I'm using a global RPLInstanceID 
+		
+		//Now add RPL Target option with the relative Transit Information Option
+		setter_byte = RPL_TARGET;
+		no_path_dao_->template set_payload<uint8_t>( &setter_byte, 24, 1 );
+		//option length 2 bytes (flags and prefix length) + 16 (prefix: entire IPv6 address)		
+		setter_byte = 18;
+		no_path_dao_->template set_payload<uint8_t>( &setter_byte, 25, 1 );
+		//Flags (Default 0)
+		setter_byte = 0;
+		no_path_dao_->template set_payload<uint8_t>( &setter_byte, 26, 1 );
+		//Prefix length 16 (Route aggregation not supported, the target prefix is the entire IPv6 address of the target)
+		no_path_dao_->template set_payload<uint8_t>( &setter_byte, 27, 1 );
+
+		no_path_dao_->template set_payload<uint8_t[16]>( &my_global_address_.addr, 28, 1 );
+		//Transit Information Option		
+		setter_byte = TRANSIT_INFORMATION;
+		no_path_dao_->template set_payload<uint8_t>( &setter_byte, 44, 1 );
+		//Option Length: 4 (other header fields) + 16 (parent address) ... there can be more parents (for now just 1)		
+		if ( mop_ == 1 )
+			setter_byte = 20;
+		//Storing mode: no parent address
+		else if( mop_ == 2 )
+			setter_byte = 4;
+		no_path_dao_->template set_payload<uint8_t>( &setter_byte, 45, 1 );
+		//0(no external targets) 0000000(default flags) = 0;
+		setter_byte = 0;
+		no_path_dao_->template set_payload<uint8_t>( &setter_byte, 46, 1 );
+		//Path Control: to understand (for now 0)
+		no_path_dao_->template set_payload<uint8_t>( &setter_byte, 47, 1 );
+		//Path Sequence: higher values means freshness of the target
+		no_path_dao_->template set_payload<uint8_t>( &path_sequence_, 48, 1 );
+		//Path Lifetime (in lifetime units???): 255 means infinity, 0 means no path
+		setter_byte = 0;
+		no_path_dao_->template set_payload<uint8_t>( &setter_byte, 49, 1 );
+
+		//if mop = 2 (Storing mode) the DODAG Parent Adrress is not needed since the DAO is sent directly to the parent
+		
+		no_path_dao_->set_transport_length( 50 );
+	
+		#ifdef ROUTING_RPL_DEBUG
+		char str[43];
+		debug().debug( "\nRPL Routing: %s SENDING NO PATH DAO\n", my_global_address_.get_address( str ) );
+		#endif
+		no_path_dao_->set_transport_next_header( Radio_IP::ICMPV6 );
+		no_path_dao_->set_hop_limit(255);
+		
+		no_path_dao_->set_source_address(my_address_);
+		//destination next_hop
+		no_path_dao_->set_destination_address(preferred_parent_);
+		no_path_dao_->set_flow_label(0);
+		no_path_dao_->set_traffic_class(0);
+
+		
+		radio_ip().send( preferred_parent_, no_path_reference_number_, NULL );
+		//add timer when ready
+		//send_dao( preferred_parent_, no_path_reference_number_, NULL );
+		*/
+	}
+
+	// -----------------------------------------------------------------------
+	template<typename OsModel_P,
+		typename Radio_IP_P,
+		typename Radio_P,
+		typename Debug_P,
+		typename Timer_P,
+		typename Clock_P>
 	uint8_t
 	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
 	add_prefix_information( uint8_t position )
@@ -3353,7 +3455,7 @@ namespace wiselib
 		
 		radio_ip().routing_.forwarding_table_[Radio_IP::NULL_NODE_ID].next_hop = parent;
 
-		best_path_cost_ = path_cost;
+		cur_min_path_cost_ = path_cost;
 		rank_ = path_cost;
 	
 		dio_message_->template set_payload<uint16_t>( &rank_, 6, 1 );
@@ -3530,6 +3632,7 @@ namespace wiselib
 						data_pointer[2] = 128;
 					}
 				}
+				radio_ip().routing_.print_forwarding_table();
 				return Radio_IP::CORRECT;
 			}
 			
@@ -3560,6 +3663,7 @@ namespace wiselib
 						//This means that the destination is down
 						//SET DOWN BIT = 1, RANK ERROR = 0 (first hop), Forwarding error = 0 : 2^7 = 128
 						data_pointer[2] = 128;
+						radio_ip().routing_.print_forwarding_table();
 						return Radio_IP::CORRECT;
 					}
 					else
@@ -3577,6 +3681,7 @@ namespace wiselib
 							//... send a DIS to the root? 							
 													
 							//For now just DROP THE PACKET
+							//radio_ip().routing_.print_forwarding_table();
 							return Radio_IP::DROP_PACKET;
 						}
 			
@@ -3608,6 +3713,7 @@ namespace wiselib
 							#endif
 						}
 						data_pointer[2] = 0;
+						radio_ip().routing_.print_forwarding_table();
 						return Radio_IP::CORRECT;
 					}
 					
@@ -3676,6 +3782,7 @@ namespace wiselib
 							#endif
 							data_pointer[4] = (uint8_t) (rank_ >> 8 );
 							data_pointer[5] = (uint8_t) (rank_ );
+							radio_ip().routing_.print_forwarding_table();
 							return Radio_IP::CORRECT;
 						}
 					}
@@ -3694,6 +3801,7 @@ namespace wiselib
 								data_pointer[2] = 128;
 								data_pointer[4] = (uint8_t) (rank_ >> 8 );
 								data_pointer[5] = (uint8_t) (rank_ );
+								radio_ip().routing_.print_forwarding_table();
 								return Radio_IP::CORRECT;
 							}
 							else
@@ -3715,6 +3823,7 @@ namespace wiselib
 								#endif
 								data_pointer[4] = (uint8_t) (rank_ >> 8 );
 								data_pointer[5] = (uint8_t) (rank_ );
+								radio_ip().routing_.print_forwarding_table();
 								return Radio_IP::CORRECT;
 							}							
 						}
@@ -3740,6 +3849,7 @@ namespace wiselib
 							#endif
 							data_pointer[4] = (uint8_t) (rank_ >> 8 );
 							data_pointer[5] = (uint8_t) (rank_ );
+							radio_ip().routing_.print_forwarding_table();
 							return Radio_IP::CORRECT;
 						}
 					}

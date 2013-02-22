@@ -467,19 +467,22 @@ namespace wiselib
 		{
 			//Routing implementation
 			
+			
 			//The simple implementation
 			node_id_t next_hop = requested_destination_;
 			
 			
 			ForwardingTableValue entry(next_hop, 0, 5, InterfaceManager_t::INTERFACE_RADIO);
 			//ForwardingTableValue entry(next_hop, 0, 5, InterfaceManager_t::INTERFACE_UART);
-			forwarding_table_[requested_destination_] = entry;
-			
+			#ifndef RPL_CONFIGURED
+			forwarding_table_[requested_destination_] = entry; 
+			#endif
 			failed_alive_ = false;
 			
 			is_working = false;
 			
 			//print_forwarding_table();
+			
 		}
 	
 	// ----------------------------------------------------------------------

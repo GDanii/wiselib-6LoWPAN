@@ -37,9 +37,9 @@
 #include "algorithms/6lowpan/icmpv6.h"
 #include "algorithms/6lowpan/udp.h"
 
-//add ifdef rpl
+#ifdef RPL_CONFIGURED
 #include "algorithms/routing/rpl/rpl_routing.h" //mine
-
+#endif
 
 namespace wiselib
 {
@@ -170,14 +170,15 @@ namespace wiselib
 				icmpv6.ND_timeout_manager_function( NULL );
 			*/
 			
-			//add ifdef rpl
+			#ifdef RPL_CONFIGURED
 			//Init RPLRouting
 			rpl.init( ipv6, *radio_, *debug_, *timer_, *clock_, &packet_pool_mgr);
 			
 			//Just register callback, not enable IP radio
 			if( SUCCESS != rpl.enable_radio() )
-				debug_->debug( "Fatal error: ICMPv6 layer enabling failed! " );
-			
+				debug_->debug( "Fatal error: RPL protocol enabling failed! " );
+			#endif			
+
 		}
 		
 		ICMPv6_t icmpv6; 
