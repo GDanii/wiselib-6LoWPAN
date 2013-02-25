@@ -1853,8 +1853,12 @@ namespace wiselib
 					//the rank is relative to the preferred parent! ...
 					//the node need to store the rank for each parent in the parent set
 
-					//process only messages sent by nodes whose rank is lower than the rank of the actual node
-					//otherwise the received rank is greater, update the parent!
+					//process only messages sent by nodes whose rank is lower or greater than the rank of the actual node
+					if (parent_path_cost == rank_ )
+					{
+						packet_pool_mgr_->clean_packet( message );
+						return;	
+					}
 					if (parent_path_cost < rank_ )  //to add the equality? No
 					{
 						if( ! scan_neighbor( sender ) )
@@ -2148,7 +2152,9 @@ namespace wiselib
 				ForwardingTableIterator it = radio_ip().routing_.forwarding_table_.find( target );
 				if( it != radio_ip().routing_.forwarding_table_.end() )
 				{
-					if ( data[49] == 0 )
+					//verify lifetime... if it is 0 (i.e. NO Path DAO) then delete the entry...
+					//... (only if the SN is new, otherwise I might delete new paths! )
+					if ( data[49] == 0 && (seq_nr > it->second.seq_nr) )
 					{
 						radio_ip().routing_.forwarding_table_.erase( it );
 					}
@@ -3318,7 +3324,7 @@ namespace wiselib
 	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
 	send_no_path_dao()
 	{
-		/* IT DOESN'T WORK FOR THE MOMENT
+		// IT DOESN'T WORK FOR THE MOMENT
 		//Here starts to fill RPL fields
 		no_path_dao_->template set_payload<uint8_t>( &rpl_instance_id_, 4, 1 );
 		//1(with dao-ack) 0(global RPL instance ID is used) 000000(default flags) = 0; //128 when ready
@@ -3327,11 +3333,10 @@ namespace wiselib
 		//Reserved ( default 0 )
 		no_path_dao_->template set_payload<uint8_t>( &setter_byte, 6, 1 );
 		//dao sequence number, incremented each time a DAO is sent
-		//used to correlate a DAO message and a DAO_ACK message		
+		//used to correlate a DAO message and a DAO_ACK message	
+		dao_sequence_ = dao_sequence_ + 1;
 		no_path_dao_->template set_payload<uint8_t>( &dao_sequence_, 7, 1 );
-		
 		//DODAG_ID field not present because I'm using a global RPLInstanceID 
-		
 		//Now add RPL Target option with the relative Transit Information Option
 		setter_byte = RPL_TARGET;
 		no_path_dao_->template set_payload<uint8_t>( &setter_byte, 24, 1 );
@@ -3361,6 +3366,7 @@ namespace wiselib
 		//Path Control: to understand (for now 0)
 		no_path_dao_->template set_payload<uint8_t>( &setter_byte, 47, 1 );
 		//Path Sequence: higher values means freshness of the target
+		path_sequence_ = path_sequence_ + 1;
 		no_path_dao_->template set_payload<uint8_t>( &path_sequence_, 48, 1 );
 		//Path Lifetime (in lifetime units???): 255 means infinity, 0 means no path
 		setter_byte = 0;
@@ -3387,7 +3393,7 @@ namespace wiselib
 		radio_ip().send( preferred_parent_, no_path_reference_number_, NULL );
 		//add timer when ready
 		//send_dao( preferred_parent_, no_path_reference_number_, NULL );
-		*/
+		
 	}
 
 	// -----------------------------------------------------------------------
