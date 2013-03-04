@@ -113,6 +113,21 @@ namespace wiselib
 		//typedef typename Timer::millis_t millis_t;
 
 		//typedef IPv6Address<Radio, Debug> IPv6Address_t;
+
+		
+		
+		typedef MapStaticVector<OsModel, node_id_t, uint8_t, 20> Neighbors;
+		typedef wiselib::pair<node_id_t, uint8_t> n_pair_t;
+		typedef typename wiselib::MapStaticVector<OsModel, node_id_t, uint8_t, 20>::iterator Neighbors_iterator;
+
+
+		struct Mapped_erase_node
+		{
+			node_id_t node;
+		};
+
+		typedef vector_static<OsModel, Mapped_erase_node, 20> Erase_list;
+		typedef typename wiselib::vector_static<OsModel, Mapped_erase_node, 20>::iterator Erase_list_iterator;
 				
 		struct Mapped_neighbor_set
 		{
@@ -146,15 +161,7 @@ namespace wiselib
 		typedef wiselib::pair<node_id_t, node_id_t> rt_pair_t;
 		typedef typename wiselib::MapStaticVector<OsModel , node_id_t, node_id_t, 30>::iterator TransitTable_iterator;
 		*/		
-		
-		//Probably I don't need it, I can use the sequence number in the forwarding table entry!!
-		
-		/*
-		typedef MapStaticVector<OsModel , node_id_t, uint8_t, 50> TargetSet; //Freshness of targets
-		typedef wiselib::pair<node_id_t, uint8_t> targ_pair_t;
-		typedef typename wiselib::MapStaticVector<OsModel , node_id_t, uint8_t, 50>::iterator TargetSet_iterator;
-		*/		
-		
+				
 		typedef wiselib::ForwardingTableValue<Radio_IP> Forwarding_table_value;
 		typedef wiselib::pair<node_id_t, Forwarding_table_value> ft_pair_t;
 
@@ -352,8 +359,10 @@ namespace wiselib
 		void ETX_timer_elapsed( void *userdata );
 		
 		void update_timer_elapsed( void* userdata );
+
+		void periodic_bcast_elapsed( void* userdata );
 			
-		void find_neighbors_timer_elapsed( void* userdata );
+		//void find_neighbors_timer_elapsed( void* userdata );
 
 		void trigger_ETX_computation( uint8_t *addr );
 
@@ -378,6 +387,8 @@ namespace wiselib
 		void set_firsts_dio_fields( node_id_t from, block_data_t *data );
 	
 		void send_no_path_dao();
+
+		uint8_t periodic_bcast();
 
 		uint8_t start();
 		
@@ -547,15 +558,14 @@ namespace wiselib
 		
 		uint8_t hop_limit_; //to use if there's a HOP_COUNT constraint
 		
+		Neighbors neighbors_;
+
+		Erase_list erase_list_;
+
 		NeighborSet neighbor_set_;
 
-		ParentSet parent_set_; //vector of pairs <parent, rank>
+		ParentSet parent_set_; 
 
-		//ETXValues ETX_values_;
-		//ETXReceived ETX_received_;
-
-		//TargetSet target_set_;
-				
 		//Non-Storing Mode
 		//TransitTable transit_table_; // not used if MOP = 0 | 1
 
@@ -605,6 +615,8 @@ namespace wiselib
 		bool prefix_present_;
 
 		bool dao_ack_received_;
+
+		bool neighbors_found_;
 
 		//uint16_t best_path_cost_; //Initialize it
 		uint16_t cur_min_path_cost_; //path cost of the current preferred parent (RFC 6719, sect. 3.2), to allow hysteresis
@@ -668,6 +680,7 @@ namespace wiselib
 		first_ETX_retry_ (false),
 		discovery_received_ (false),
 		dao_ack_received_ (false),
+		neighbors_found_ (false),
 		state_ (Unconnected),
 		dio_count_ (0),
 		bcast_neigh_count_ (0),
@@ -767,7 +780,8 @@ namespace wiselib
 
 		my_address_ = radio_ip().id(); //ok
 
-		find_neighbors();
+		periodic_bcast();
+		//find_neighbors();
 		//my_global_address_ = radio_ip().global_id();
 
 		return SUCCESS;
@@ -903,10 +917,8 @@ namespace wiselib
 		dao_message_->template set_payload<uint8_t>( &setter_byte, 1, 1 );
 		no_path_dao_->template set_payload<uint8_t>( &setter_byte, 1, 1 );
 
-		//set timer in order for nodes to wait ND to configure their gloabal addresses
-		//Increase the timer delay if ND is used
-		//Perhaps I don't need to delay the start... think about it
-		timer().template set_timer<self_type, &self_type::start2>( 4000, this, 0 );
+			
+		timer().template set_timer<self_type, &self_type::start2>( 2000, this, 0 );
 		
 		return SUCCESS;
 	}
@@ -935,8 +947,18 @@ namespace wiselib
 		#endif
 		*/
 
-							
-		if ( state_ == Dodag_root )
+		if( !neighbors_found_ )
+		{
+			//set timer in order for nodes to wait the protocol to compute ETX values
+			//find_neighbors();
+			for( Neighbors_iterator it = neighbors_.begin(); it != neighbors_.end(); it++) 
+				trigger_ETX_computation( it->first.addr );
+			timer().template set_timer<self_type, &self_type::start2>( 4000, this, 0 );
+			neighbors_found_ = true;
+			return;
+		}
+									
+		else if ( state_ == Dodag_root )
 		{		
 			//block_data_t* data = dio_message_->payload();	
 			
@@ -1201,7 +1223,7 @@ namespace wiselib
 				char str[43];
 				debug().debug( "RPLRouting: This node %s seems isolated, find neighbors again\n", my_address_.get_address(str) );
 				#endif
-				find_neighbors();
+				neighbors_found_ = false;
 				start();
 			}
 		}
@@ -1246,7 +1268,7 @@ namespace wiselib
 				
 				first_ETX_retry_ = true;
 				//to restart only when the neighbor update procedure is supposed to be finished (say 3 seconds)
-				stop_timers_ = true; 
+				stop_timers_ = true;    //is it necessary??
 				timer().template set_timer<self_type, &self_type::update_timer_elapsed>( 3000, this, 0 );
 				update_neighborhood();
 				
@@ -1337,6 +1359,39 @@ namespace wiselib
 		typename Clock_P>
 	void
 	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
+	periodic_bcast_elapsed( void* userdata )
+	{
+		erase_list_.clear();
+		//here iterator...
+		for( Neighbors_iterator it = neighbors_.begin(); it != neighbors_.end(); it++) 
+		{
+			if( it->second == 0 )
+			{
+				Mapped_erase_node map;
+				map.node = it->first;
+				erase_list_.push_back( map );
+			}
+			else
+				it->second = it->second - 1;
+		}
+		for( Erase_list_iterator it_er = erase_list_.begin(); it_er != erase_list_.end(); it_er++) 
+		{
+			neighbors_.erase( it_er->node );
+		}
+		
+		periodic_bcast();
+	}
+
+	// -----------------------------------------------------------------------
+	/*
+	template<typename OsModel_P,
+		typename Radio_IP_P,
+		typename Radio_P,
+		typename Debug_P,
+		typename Timer_P,
+		typename Clock_P>
+	void
+	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
 	find_neighbors_timer_elapsed( void* userdata )
 	{
 		//After 5 times the node is considered isolated!
@@ -1359,6 +1414,7 @@ namespace wiselib
 		else
 			bcast_neigh_count_ = 0;
 	}
+	*/
 	
 	// -----------------------------------------------------------------------
 	
@@ -1560,43 +1616,34 @@ namespace wiselib
 			uint8_t neigh_msg_type = data[4];
 			if ( neigh_msg_type == 1 )
 			{
-				//now send ETX request
-				Mapped_neighbor_set map;
-				map.bidirectionality = false;
-				map.etx_received = false;
-				map.etx_forward = 0;   //to add a value that represents 'undefined', 0 maybe
-				map.etx_reverse = 1;   //to add a value that represents 'undefined', 0 maybe, No!
-
-				neighbor_set_.erase( sender );
-				neighbor_set_.insert( neigh_pair_t( sender, map ) );
+				Neighbors_iterator it = neighbors_.find( sender );
+				if( it == neighbors_.end() )
+					neighbors_.insert( n_pair_t( sender, 2 ) );
 				
-				trigger_ETX_computation( neighbor_set_.find( sender )->first.addr );
+				else
+					it->second = 2;	
 
-				packet_pool_mgr_->clean_packet( message );
+				packet_pool_mgr_->clean_packet( message );				
+				return;
+				
 						
 			}
 			else if( neigh_msg_type == 2 )
 			{
 				
-				discovery_received_ = true;
 				#ifdef ROUTING_RPL_DEBUG
 				debug().debug( "\nRPL Routing: I'm %s, ETX Request received from %s\n", my_address_.get_address(str), sender.get_address(str2) );
 				#endif
-				//ETX request received 
+				
 				//No need timer, the sender will send a message again if it doesn't receive my response
-				uint8_t forward = 1;
+				uint8_t forward = 255;
 				uint8_t reverse = 1;
-				bool received = true; //don't need it
+				
 				Mapped_neighbor_set map;
 								
 				NeighborSet_iterator it = neighbor_set_.find( sender );
 				if( it != neighbor_set_.end() )				
 				{	
-					//this is to manage first neighborhood update message 
-					if (data[6] == 10 )
-						it->second.etx_received = false;
-
-
 					forward = it->second.etx_forward;
 					if( ! it->second.etx_received )
 						reverse = data[5];
@@ -1604,19 +1651,10 @@ namespace wiselib
 						reverse = it->second.etx_reverse;
 					map.etx_received = true;
 				}
-				else
-				{
-					//This could be a new node while the network is already active!
-					//...thus there's the need to compute the forward value
-					discovery_received_ = false;
-					reverse = data[5];
-					map.etx_received = false;
-					trigger_ETX_computation( sender.addr );
-				}
-				
+			
 				map.bidirectionality = it->second.bidirectionality; //it is always not verified? NO!!!
 				neighbor_set_.erase( sender );
-				//map.etx_received = true;
+				
 				map.etx_forward = forward;
 				map.etx_reverse = reverse;				
 		
@@ -1740,11 +1778,14 @@ namespace wiselib
 					if ( parent_set_.empty() )
 					{
 						//NO MORE PARENTS!!!! MANAGE IT
+						ForwardingTableIterator default_route = radio_ip().routing_.forwarding_table_.find( Radio_IP::NULL_NODE_ID );
+						radio_ip().routing_.forwarding_table_.erase( default_route );
 						rank_ = INFINITE_RANK;
 						state_ = Unconnected;
 						preferred_parent_ = Radio_IP::NULL_NODE_ID;
 						dio_message_->template set_payload<uint16_t>( &rank_, 6, 1 );
-						//advertise infinite rank
+						//advertise infinite rank: if this is lost, the sub-DODAG think it is still connected
+						//It seems that there's a sort of self-correction, loops are impossible to occur!
 						send_dio( Radio_IP::BROADCAST_ADDRESS, dio_reference_number_, NULL );  
 
 						//STOP TIMERS?
@@ -1952,7 +1993,7 @@ namespace wiselib
 								}
 																
 								//CHANGE THE RANK NODE ANYWAY AND ADVERTISE CHILDREN, HOW, FIRST_DIO????
-								//BUT WITH FIRST_DIO THE PARENT SET IS CLEARED!!!!
+								//BUT WITH FIRST_DIO THE PARENT SET IS CLEARED! 
 								update_dio( sender, current_best_path_cost );
 								
 								find_worst_parent();
@@ -2035,7 +2076,10 @@ namespace wiselib
 									state_ = Unconnected;
 									preferred_parent_ = Radio_IP::NULL_NODE_ID;
 									dio_message_->template set_payload<uint16_t>( &rank_, 6, 1 );
-
+									//This message might not be received by the sub_DODAG
+									//... thus a loop may be created
+									//It seems that there's a sort of self-correction, loops are impossible to occur!
+									//loop possibility: only one node in parent set!!!!!!!!!!
 									send_dio( Radio_IP::BROADCAST_ADDRESS, dio_reference_number_, NULL );  
 
 									//STOP TIMERS?
@@ -2215,7 +2259,7 @@ namespace wiselib
 				{
 					message->remote_ll_address = Radio_P::NULL_NODE_ID;
 					message->target_interface = NUMBER_OF_INTERFACES;
-					//now send this message to the preferred parent... or all the DAO parants?
+					//now send this message to the preferred parent... or all the DAO parents?
 					message->set_source_address(my_address_);
 
 					send( preferred_parent_, packet_number, NULL );
@@ -2336,14 +2380,13 @@ namespace wiselib
 		state_ = Connected;
 		//FINISH SCANNING HERE------------------------------------------------------------------------------------------
 
-		
 		set_firsts_dio_fields( from, data );
 
 		//Fill the RT
 		Forwarding_table_value entry( from, 0, 0, 0 );
 		
 		//Or Null_node_id instead of dodag_id??? Already done in set_firsts_dio_fields, is this necessary?
-		radio_ip().routing_.forwarding_table_.insert( ft_pair_t( dodag_id_, entry ) );
+		//radio_ip().routing_.forwarding_table_.insert( ft_pair_t( dodag_id_, entry ) );
 	
 		//In storing mode ipv6 source and destination addresses inside a DAO must be link-local
 					
@@ -2961,7 +3004,7 @@ namespace wiselib
 	trigger_ETX_computation( uint8_t *addr )
 	{
 		uint8_t forward = 1;
-		uint8_t reverse = 1;
+		uint8_t reverse = 255;
 		
 		node_id_t node;
 		uint8_t node_addr[16];
@@ -2969,11 +3012,13 @@ namespace wiselib
 		node.set_address( node_addr );
 
 		Mapped_neighbor_set map;
+		
 		NeighborSet_iterator it = neighbor_set_.find( node );
+				
 		if( it != neighbor_set_.end() )		
 		{
 			//if the number of tentative are over a certain threshold the neighbor is considered not reachable anymore
-			if( it->second.etx_forward > 10 )
+			if( it->second.etx_forward > 4 )   //to change according to the reliability of the network
 				//uint8_t ret = delete_neighbor( node );
 				if ( delete_neighbor( node ) == 1 )
 					return; //1 means no parents anymore!
@@ -2988,6 +3033,7 @@ namespace wiselib
 			neighbor_set_.erase( node );
 			
 		}
+			
 		map.etx_forward = forward;
 		map.etx_reverse = reverse;
 
@@ -3004,7 +3050,6 @@ namespace wiselib
 		if( num == Packet_Pool_Mgr_t::NO_FREE_PACKET )
 			return;			
 
-		
 		uint8_t setter_byte = RPL_CONTROL_MESSAGE;
 		message->template set_payload<uint8_t>( &setter_byte, 0, 1 ); 
 		
@@ -3040,10 +3085,6 @@ namespace wiselib
 
 		send( node, num, NULL );
 
-		#ifdef ROUTING_RPL_DEBUG
-		//char str[43];
-		//debug().debug( "\nRPLRouting: Node: %s FIRST BYTE %d \n", my_address_.get_address(str), *(node.addr));
-		#endif
 		//the timer must be greater than the RTT
 		timer().template set_timer<self_type, &self_type::ETX_timer_elapsed>( 1500, this, addr );
 	}
@@ -3058,13 +3099,8 @@ namespace wiselib
 		typename Clock_P>
 	uint8_t
 	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
-	find_neighbors()
+	periodic_bcast()
 	{
-		bcast_neigh_count_ = bcast_neigh_count_ + 1;
-		#ifdef ROUTING_RPL_DEBUG
-		char str[43];
-		//debug().debug( "\nRPLRouting: Node: %s is finding neighbors \n", my_address_.get_address(str));
-		#endif
 		uint8_t num = packet_pool_mgr_->get_unused_packet_with_number();
 		IPv6Packet_t* message = packet_pool_mgr_->get_packet_pointer( num );
 		
@@ -3094,11 +3130,77 @@ namespace wiselib
 
 		send( Radio_IP::BROADCAST_ADDRESS, num, NULL );
 		
-		timer().template set_timer<self_type, &self_type::find_neighbors_timer_elapsed>( 2200, this, 0 );
+		timer().template set_timer<self_type, &self_type::periodic_bcast_elapsed>( 2200, this, 0 );
+
+		return SUCCESS;
+
+	}
+
+	// -----------------------------------------------------------------------
+	/*
+	template<typename OsModel_P,
+		typename Radio_IP_P,
+		typename Radio_P,
+		typename Debug_P,
+		typename Timer_P,
+		typename Clock_P>
+	uint8_t
+	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
+	find_neighbors()
+	{
+				
+		bcast_neigh_count_ = bcast_neigh_count_ + 1;
+		#ifdef ROUTING_RPL_DEBUG
+		char str[43];
+		//debug().debug( "\nRPLRouting: Node: %s is finding neighbors \n", my_address_.get_address(str));
+		#endif
+		uint8_t num = packet_pool_mgr_->get_unused_packet_with_number();
+		IPv6Packet_t* message = packet_pool_mgr_->get_packet_pointer( num );
+		
+		if( num == Packet_Pool_Mgr_t::NO_FREE_PACKET )
+			return ERR_UNSPEC;			
+
+		
+		uint8_t setter_byte = RPL_CONTROL_MESSAGE;
+		message->template set_payload<uint8_t>( &setter_byte, 0, 1 ); 
+		
+		
+		setter_byte = OTHERWISE;
+		message->template set_payload<uint8_t>( &setter_byte, 1, 1 );
+
+		setter_byte = 2; //1 for 1st BROADCAST, 2 For Unicast ETX request, 3 for Unicast ETX response
+		message->template set_payload<uint8_t>( &setter_byte, 4, 1 );
+
+		message->set_transport_length( 7 ); 
+		
+		message->set_transport_next_header( Radio_IP::ICMPV6 );
+		message->set_hop_limit(255);
+				
+		message->set_source_address(my_address_);
+
+		message->set_flow_label(0);
+		message->set_traffic_class(0);
+
+		Mapped_neighbor_set map;
+		map.bidirectionality = false;
+		map.etx_received = false;
+		map.etx_forward = 0;   //to add a value that represents 'undefined', 0 maybe
+		map.etx_reverse = 1;   //to add a value that represents 'undefined', 0 maybe, No!
+
+		//neighbor_set_.erase( sender );
+		//neighbor_set_.insert( neigh_pair_t( sender, map ) );
+		
+		
+		
+	
+		//send( Radio_IP::BROADCAST_ADDRESS, num, NULL );
+		
+		//timer().template set_timer<self_type, &self_type::find_neighbors_timer_elapsed>( 2200, this, 0 );
 
 		return SUCCESS;
 	}
 
+	*/
 	// -----------------------------------------------------------------------
 	
 	template<typename OsModel_P,
@@ -3134,12 +3236,17 @@ namespace wiselib
 				#ifdef ROUTING_RPL_DEBUG
 				debug().debug( "\nRPLRouting: NO MORE PARENTS, ADVERTISE INFINITE RANK\n" );
 				#endif
+
+				//Delete default route
+				ForwardingTableIterator default_route = radio_ip().routing_.forwarding_table_.find( Radio_IP::NULL_NODE_ID );
+				radio_ip().routing_.forwarding_table_.erase( default_route );
 				
 				rank_ = INFINITE_RANK;
 				state_ = Unconnected;
 				preferred_parent_ = Radio_IP::NULL_NODE_ID;
 				dio_message_->template set_payload<uint16_t>( &rank_, 6, 1 );
-
+				//This message might not be received by the sub_DODAG!
+				//It seems that there's a sort of self-correction, loops are impossible to occur!
 				send_dio( Radio_IP::BROADCAST_ADDRESS, dio_reference_number_, NULL );  
 
 				//STOP TIMERS?
@@ -3166,18 +3273,22 @@ namespace wiselib
 				}
 															
 				//NEW PREFERRED PARENT
-				update_dio( neighbor, current_best_path_cost);
+				update_dio( best, current_best_path_cost);
 
 				//SEND DAO, NO NEED TO PREPARE IT.. BUT CHANGE THE DaoSequenceNumber
 				//uint8_t dao_length;
 				//dao_length = prepare_dao();
 				//dao_message_->set_transport_length( dao_length );
-					
-				dao_ack_received_ = false;		
-				dao_sequence_ = dao_sequence_ + 1;
-				dao_message_->template set_payload<uint8_t>( &dao_sequence_, 7, 1 );
-				path_sequence_ = path_sequence_ + 1;
-				dao_message_->template set_payload<uint8_t>( &path_sequence_, 48, 1 );
+				
+				
+				if( best != Radio_IP::NULL_NODE_ID) //the else is impossible (empty parent set managed in the previous if block)
+				{
+					dao_ack_received_ = false;
+					dao_sequence_ = dao_sequence_ + 1;
+					dao_message_->template set_payload<uint8_t>( &dao_sequence_, 7, 1 );
+					path_sequence_ = path_sequence_ + 1;
+					dao_message_->template set_payload<uint8_t>( &path_sequence_, 48, 1 );
+				}
 				//dao sent automatically thanks to the timer				
 				/*				
 				if( mop_ == 1 )
@@ -3227,7 +3338,9 @@ namespace wiselib
 	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
 	update_neighborhood()
 	{
-		//for each neighbor verify again ETX
+		//for each neighbor verify again ETX...
+		//no, maybe it is better only to update the neighbor list
+		//evaluate which procedure is better!
 		for (NeighborSet_iterator it = neighbor_set_.begin(); it != neighbor_set_.end(); it++)
 		{
 			it->second.etx_received = false;
