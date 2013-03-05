@@ -27,7 +27,6 @@
 #include "util/base_classes/routing_base.h"
 #include "algorithms/6lowpan/ipv6_packet_pool_manager.h"
 
-//#include "algorithms/6lowpan/simple_queryable_routing.h"
 #include "util/pstl/map_static_vector.h"
 
 #include "config.h"
@@ -37,6 +36,8 @@
 #define DEFAULT_DIO_REDUNDANCY_CONSTANT 10	//k
 
 #define DEFAULT_DAO_DELAY 1000
+
+#define NO_PATH_DAO_COUNT 3
 
 
 //Rank Constants
@@ -114,12 +115,9 @@ namespace wiselib
 
 		//typedef IPv6Address<Radio, Debug> IPv6Address_t;
 
-		
-		
 		typedef MapStaticVector<OsModel, node_id_t, uint8_t, 20> Neighbors;
 		typedef wiselib::pair<node_id_t, uint8_t> n_pair_t;
 		typedef typename wiselib::MapStaticVector<OsModel, node_id_t, uint8_t, 20>::iterator Neighbors_iterator;
-
 
 		struct Mapped_erase_node
 		{
@@ -361,9 +359,9 @@ namespace wiselib
 		void update_timer_elapsed( void* userdata );
 
 		void periodic_bcast_elapsed( void* userdata );
-			
-		//void find_neighbors_timer_elapsed( void* userdata );
 
+		void no_path_timer_elapsed( void* userdata );
+			
 		void trigger_ETX_computation( uint8_t *addr );
 
 		void first_dio( node_id_t from, block_data_t *data, uint16_t length );
@@ -393,8 +391,6 @@ namespace wiselib
 		uint8_t start();
 		
 		void start2( void *userdata );
-
-		uint8_t find_neighbors();
 
 		bool scan_neighbor( node_id_t from );
 
@@ -562,7 +558,9 @@ namespace wiselib
 
 		NeighborSet neighbor_set_;
 
-		ParentSet parent_set_; 
+		ParentSet parent_set_;
+	
+		uint8_t no_path_count_;
 
 		//Non-Storing Mode
 		//TransitTable transit_table_; // not used if MOP = 0 | 1
@@ -580,6 +578,8 @@ namespace wiselib
 		node_id_t dodag_id_; //ID of the dodag's root (An IPv6 Address)
 
 		node_id_t preferred_parent_;
+
+		node_id_t old_preferred_parent_;
 
 		node_id_t worst_parent_;
 		 
@@ -696,8 +696,10 @@ namespace wiselib
 		min_hop_rank_increase_ (DEFAULT_MIN_HOP_RANK_INCREASE),
 		DAGMaxRankIncrease_ ( 0 ), //0 means disabled
 		preferred_parent_ ( Radio_IP::NULL_NODE_ID ),
+		old_preferred_parent_ ( Radio_IP::NULL_NODE_ID ),
 		worst_parent_ ( Radio_IP::NULL_NODE_ID ),
-		cur_min_path_cost_ (0xFFFF)
+		cur_min_path_cost_ (0xFFFF),
+		no_path_count_ (0)
 	{}
 	// -----------------------------------------------------------------------
 	template<typename OsModel_P,
@@ -894,11 +896,6 @@ namespace wiselib
 	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
 	start2( void* userdata )
 	{	
-		//UNCOMMENT IF UNDERLYING ND IS USED, NO IF THE ADDRESS CONFIG IS MANAGED THROUGH DIOs
-		//if( state_ != Dodag_root )
-			//my_global_address_ = radio_ip().global_id();
-		//TILL HERE
-		
 		/*
 		#ifdef ROUTING_RPL_DEBUG
 		char str[43];
@@ -910,7 +907,6 @@ namespace wiselib
 		if( !neighbors_found_ )
 		{
 			//set timer in order for nodes to wait the protocol to compute ETX values
-			//find_neighbors();
 			for( Neighbors_iterator it = neighbors_.begin(); it != neighbors_.end(); it++) 
 				trigger_ETX_computation( it->first.addr );
 			timer().template set_timer<self_type, &self_type::start2>( 4000, this, 0 );
@@ -920,8 +916,6 @@ namespace wiselib
 									
 		else if ( state_ == Dodag_root )
 		{		
-			//block_data_t* data = dio_message_->payload();	
-			
 			version_number_ = 1;
 			imin_ = 2 << (dio_int_min_ - 1);
 			//imax_ = DEFAULT_DIO_INTERVAL_DOUBLINGS; (set by the constructor)
@@ -1269,6 +1263,27 @@ namespace wiselib
 
 	// -----------------------------------------------------------------------
 	
+	template<typename OsModel_P,
+		typename Radio_IP_P,
+		typename Radio_P,
+		typename Debug_P,
+		typename Timer_P,
+		typename Clock_P>
+	void
+	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
+	no_path_timer_elapsed( void* userdata )
+	{
+		if( no_path_count_ < NO_PATH_DAO_COUNT )
+		{
+			radio_ip().send( old_preferred_parent_, no_path_reference_number_, NULL );
+			no_path_count_ = no_path_count_ + 1;
+			timer().template set_timer<self_type, &self_type::no_path_timer_elapsed>( 300, this, 0 );
+		}
+		no_path_count_ = 0;
+	}
+
+	// -----------------------------------------------------------------------
+	
 	//TRICKLE TIMER ALSO FOR DAOs?
 	template<typename OsModel_P,
 		typename Radio_IP_P,
@@ -1322,39 +1337,7 @@ namespace wiselib
 	}
 
 	// -----------------------------------------------------------------------
-	/*
-	template<typename OsModel_P,
-		typename Radio_IP_P,
-		typename Radio_P,
-		typename Debug_P,
-		typename Timer_P,
-		typename Clock_P>
-	void
-	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
-	find_neighbors_timer_elapsed( void* userdata )
-	{
-		//After 5 times the node is considered isolated!
-		if( !discovery_received_ && bcast_neigh_count_ < 5 )
-		{
-			#ifdef ROUTING_RPL_DEBUG
-			char str[43];
-			debug().debug( "\nRPL Routing: %s FIND NEIGHBORS AGAIN!!!\n", my_address_.get_address(str) );
-			#endif
-			find_neighbors();
-		}
-		else if(  bcast_neigh_count_ >=5 )
-		{
-			#ifdef ROUTING_RPL_DEBUG
-			char str[43];
-			debug().debug( "\nRPL Routing: NODE %s IS ISOLATED!\n", my_address_.get_address(str) );
-			#endif
-			bcast_neigh_count_ = 0;
-		}
-		else
-			bcast_neigh_count_ = 0;
-	}
-	*/
-	
+		
 	// -----------------------------------------------------------------------
 	
 	template<typename OsModel_P,
@@ -2942,6 +2925,7 @@ namespace wiselib
 	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
 	trigger_ETX_computation( uint8_t *addr )
 	{
+		//Currently ETX computed only once
 		uint8_t forward = 1;
 		uint8_t reverse = 255;
 		
@@ -2956,11 +2940,15 @@ namespace wiselib
 				
 		if( it != neighbor_set_.end() )		
 		{
-			//if the number of tentative are over a certain threshold the neighbor is considered not reachable anymore
-			if( it->second.etx_forward > 4 )   //to change according to the reliability of the network
+			//if the number of tentative are over a certain threshold value the neighbor is considered not reachable anymore
+			if( it->second.etx_forward > 3 )   //to change according to the reliability of the network
+			{
 				//uint8_t ret = delete_neighbor( node );
-				if ( delete_neighbor( node ) == 1 )
-					return; //1 means no parents anymore!
+				//if ( delete_neighbor( node ) == 1 )
+				//	return; //1 means no parents anymore!
+				neighbor_set_.erase( node );
+				return;
+			}
 			
 			it->second.etx_forward = it->second.etx_forward + 1;
 
@@ -3066,71 +3054,7 @@ namespace wiselib
 
 	}
 
-	// -----------------------------------------------------------------------
-	/*
-	template<typename OsModel_P,
-		typename Radio_IP_P,
-		typename Radio_P,
-		typename Debug_P,
-		typename Timer_P,
-		typename Clock_P>
-	uint8_t
-	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
-	find_neighbors()
-	{
-				
-		bcast_neigh_count_ = bcast_neigh_count_ + 1;
-		#ifdef ROUTING_RPL_DEBUG
-		char str[43];
-		//debug().debug( "\nRPLRouting: Node: %s is finding neighbors \n", my_address_.get_address(str));
-		#endif
-		uint8_t num = packet_pool_mgr_->get_unused_packet_with_number();
-		IPv6Packet_t* message = packet_pool_mgr_->get_packet_pointer( num );
-		
-		if( num == Packet_Pool_Mgr_t::NO_FREE_PACKET )
-			return ERR_UNSPEC;			
-
-		
-		uint8_t setter_byte = RPL_CONTROL_MESSAGE;
-		message->template set_payload<uint8_t>( &setter_byte, 0, 1 ); 
-		
-		
-		setter_byte = OTHERWISE;
-		message->template set_payload<uint8_t>( &setter_byte, 1, 1 );
-
-		setter_byte = 2; //1 for 1st BROADCAST, 2 For Unicast ETX request, 3 for Unicast ETX response
-		message->template set_payload<uint8_t>( &setter_byte, 4, 1 );
-
-		message->set_transport_length( 7 ); 
-		
-		message->set_transport_next_header( Radio_IP::ICMPV6 );
-		message->set_hop_limit(255);
-				
-		message->set_source_address(my_address_);
-
-		message->set_flow_label(0);
-		message->set_traffic_class(0);
-
-		Mapped_neighbor_set map;
-		map.bidirectionality = false;
-		map.etx_received = false;
-		map.etx_forward = 0;   //to add a value that represents 'undefined', 0 maybe
-		map.etx_reverse = 1;   //to add a value that represents 'undefined', 0 maybe, No!
-
-		//neighbor_set_.erase( sender );
-		//neighbor_set_.insert( neigh_pair_t( sender, map ) );
-		
-		
-		
 	
-		//send( Radio_IP::BROADCAST_ADDRESS, num, NULL );
-		
-		//timer().template set_timer<self_type, &self_type::find_neighbors_timer_elapsed>( 2200, this, 0 );
-
-		return SUCCESS;
-	}
-
-	*/
 	// -----------------------------------------------------------------------
 	
 	template<typename OsModel_P,
@@ -3149,7 +3073,8 @@ namespace wiselib
 		//IMPORTANT: CLEAN ALSE THE POSSIBLE ENTRY IN THE FORWARDING TABLE
 		ForwardingTableIterator it_neigh = radio_ip().routing_.forwarding_table_.find( neighbor );
 		radio_ip().routing_.forwarding_table_.erase( it_neigh );
-
+			
+		
 		if( state_ == Dodag_root || state_ == Floating_Dodag_root )
 			return 0;
 		else
@@ -3410,9 +3335,9 @@ namespace wiselib
 		no_path_dao_->set_flow_label(0);
 		no_path_dao_->set_traffic_class(0);
 
-		
-		radio_ip().send( preferred_parent_, no_path_reference_number_, NULL );
-		//add timer when ready
+		old_preferred_parent_ = preferred_parent_;
+		radio_ip().send( old_preferred_parent_, no_path_reference_number_, NULL );
+		//add timer when ready or send it a reasonable amount of times (better)
 		//send_dao( preferred_parent_, no_path_reference_number_, NULL );
 		
 	}
