@@ -402,8 +402,6 @@ namespace wiselib
 
 		void update_dio( node_id_t parent, uint16_t path_cost );
 
-		void update_neighborhood();
-		
 		void find_worst_parent();
 
 		uint8_t delete_neighbor( node_id_t neighbor );
@@ -608,8 +606,6 @@ namespace wiselib
 
 		bool etx_;
 
-		bool first_ETX_retry_;
-
 		bool discovery_received_;
 
 		bool prefix_present_;
@@ -677,7 +673,6 @@ namespace wiselib
 	RPLRouting()
 		: rpl_instance_id_ (1),
 		etx_ (true),
-		first_ETX_retry_ (false),
 		discovery_received_ (false),
 		dao_ack_received_ (false),
 		neighbors_found_ (false),
@@ -702,7 +697,6 @@ namespace wiselib
 		DAGMaxRankIncrease_ ( 0 ), //0 means disabled
 		preferred_parent_ ( Radio_IP::NULL_NODE_ID ),
 		worst_parent_ ( Radio_IP::NULL_NODE_ID ),
-		//best_path_cost_ (0xFFFF)
 		cur_min_path_cost_ (0xFFFF)
 	{}
 	// -----------------------------------------------------------------------
@@ -781,9 +775,7 @@ namespace wiselib
 		my_address_ = radio_ip().id(); //ok
 
 		periodic_bcast();
-		//find_neighbors();
-		//my_global_address_ = radio_ip().global_id();
-
+		
 		return SUCCESS;
 	}
 	// -----------------------------------------------------------------------
@@ -819,15 +811,6 @@ namespace wiselib
 	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
 	set_dodag_root( bool root, uint16_t ocp = 0 )
 	{
-		//UNCOMMENT IF UNDERLYING ND IS USED, NO IF THE ADDRESS CONFIG IS MANAGED THROUGH DIOs
-		//act_nd_storage = radio_ip().interface_manager_->get_nd_storage(0);
-				
-		
-		//find_neighbors();
-
-		//Every node is a 6LR in order to spread the address configuration all over the network;
-		//UNCOMMENT IF UNDERLYING ND IS USED, NO IF THE ADDRESS CONFIG IS MANAGED THROUGH DIOs
-		//act_nd_storage->is_router = true;
 		if ( root )
 		{
 			uint8_t global_prefix[8];
@@ -863,33 +846,10 @@ namespace wiselib
 			ocp_ = ocp;
 			mop_ = 2; //Storing-mode
 			
-			//UNCOMMENT IF UNDERLYING ND IS USED, NO IF THE ADDRESS CONFIG IS MANAGED THROUGH DIOs
-			/*
-			act_nd_storage->is_border_router = true;
-			act_nd_storage->border_router_version_number = 1;
-			act_nd_storage->border_router_address = my_global_address_;
-			act_nd_storage->is_router = true;
-			*/
-
 		}
 		else
-		{
-			//COMMENT OUT IF NO ND IS USED
-			//uint8_t global_prefix[8];
-			//global_prefix[0]=0xAA;
-			//global_prefix[1]=0xAA;
-			//memset(&(global_prefix[2]),0, 6);
-						
-			//my_global_address_.set_prefix(global_prefix);
-			//my_global_address_.prefix_length = 64;
-
-			//my_global_address_.set_long_iid( &my_link_layer_address_, true );
-			
-			//radio_ip().interface_manager_->set_prefix_for_interface( my_global_address_.addr ,0 ,64 );
-			//TILL HERE
 			state_ = Unconnected;
-		}	
-		
+				
 	}
 	
 	// -----------------------------------------------------------------------
@@ -1262,20 +1222,6 @@ namespace wiselib
 			
 			version_last_time_ = version_number_;
 
-			//A sort of ND compliant with RPL
-			if (count_timer_ >= 12)
-			{
-				
-				first_ETX_retry_ = true;
-				//to restart only when the neighbor update procedure is supposed to be finished (say 3 seconds)
-				stop_timers_ = true;    //is it necessary??
-				timer().template set_timer<self_type, &self_type::update_timer_elapsed>( 3000, this, 0 );
-				update_neighborhood();
-				
-				//find_neighbors();  //find new neighbors???
-				count_timer_ = 0;
-			}
-			count_timer_ = count_timer_ + 1;
 		}
 		
 		//Enter here just once per 'new version DIO'
@@ -1300,14 +1246,7 @@ namespace wiselib
 			
 			version_last_time_ = version_number_;
 			stop_timers_ = false;
-	
-			//A sort of ND compliant with RPL
-			if (count_timer_ >= 20)
-			{
-				//find_neighbors();  //To Update
-				count_timer_ = 0;
-			}
-			count_timer_ = count_timer_ + 1;
+			
 		}
 			
 	}
@@ -3023,8 +2962,7 @@ namespace wiselib
 				if ( delete_neighbor( node ) == 1 )
 					return; //1 means no parents anymore!
 			
-			if( ! first_ETX_retry_ )
-				it->second.etx_forward = it->second.etx_forward + 1;
+			it->second.etx_forward = it->second.etx_forward + 1;
 
 			forward = it->second.etx_forward;
 			reverse = it->second.etx_reverse;
@@ -3061,18 +2999,10 @@ namespace wiselib
 		
 		message->template set_payload<uint8_t>( &forward, 5, 1 );
 		
-		if ( first_ETX_retry_ )
-		{
-			setter_byte = 10;
-			message->template set_payload<uint8_t>( &setter_byte, 6, 1 );
-			first_ETX_retry_ = false;
-		}
-		else
-		{
-			setter_byte = 0;
-			message->template set_payload<uint8_t>( &setter_byte, 6, 1 );
-		}		
-
+		//don't need this
+		setter_byte = 0;
+		message->template set_payload<uint8_t>( &setter_byte, 6, 1 );
+		
 		message->set_transport_length( 7 ); 
 		
 		message->set_transport_next_header( Radio_IP::ICMPV6 );
@@ -3326,29 +3256,7 @@ namespace wiselib
 		if( current_worst_path_cost == 0 )
 			worst_parent_ = Radio_IP::NULL_NODE_ID;
 	}
-	// -----------------------------------------------------------------------
 	
-	template<typename OsModel_P,
-		typename Radio_IP_P,
-		typename Radio_P,
-		typename Debug_P,
-		typename Timer_P,
-		typename Clock_P>
-	void
-	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
-	update_neighborhood()
-	{
-		//for each neighbor verify again ETX...
-		//no, maybe it is better only to update the neighbor list
-		//evaluate which procedure is better!
-		for (NeighborSet_iterator it = neighbor_set_.begin(); it != neighbor_set_.end(); it++)
-		{
-			it->second.etx_received = false;
-			it->second.bidirectionality = false;
-			trigger_ETX_computation( it->first.addr );
-		}
-	}
-
 	// -----------------------------------------------------------------------
 	template<typename OsModel_P,
 		typename Radio_IP_P,
