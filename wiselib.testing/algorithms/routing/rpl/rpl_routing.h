@@ -356,8 +356,6 @@ namespace wiselib
 
 		void ETX_timer_elapsed( void *userdata );
 		
-		void update_timer_elapsed( void* userdata );
-
 		void periodic_bcast_elapsed( void* userdata );
 
 		void no_path_timer_elapsed( void* userdata );
@@ -384,7 +382,7 @@ namespace wiselib
 		
 		void set_firsts_dio_fields( node_id_t from, block_data_t *data );
 	
-		void send_no_path_dao();
+		void send_no_path_dao( node_id_t target );
 
 		uint8_t periodic_bcast();
 
@@ -560,8 +558,6 @@ namespace wiselib
 
 		ParentSet parent_set_;
 	
-		uint8_t no_path_count_;
-
 		//Non-Storing Mode
 		//TransitTable transit_table_; // not used if MOP = 0 | 1
 
@@ -612,6 +608,8 @@ namespace wiselib
 
 		bool dao_ack_received_;
 
+		bool no_path_ack_received_;
+
 		bool neighbors_found_;
 
 		//uint16_t best_path_cost_; //Initialize it
@@ -636,6 +634,8 @@ namespace wiselib
 
 		uint8_t dao_sequence_;
 		uint8_t path_sequence_;
+
+		uint8_t current_no_dao_sequence_;
 
 		
 		uint32_t max_interval_; //depends on imin and imax
@@ -675,6 +675,7 @@ namespace wiselib
 		etx_ (true),
 		discovery_received_ (false),
 		dao_ack_received_ (false),
+		no_path_ack_received_ (false),
 		neighbors_found_ (false),
 		state_ (Unconnected),
 		dio_count_ (0),
@@ -682,6 +683,7 @@ namespace wiselib
 		dtsn_ (0),
 		dao_sequence_ (0),
 		path_sequence_ (0),
+		current_no_dao_sequence_(0),
 		version_last_time_ (0),
 		stop_timers_ (false),
 		prefix_present_ (false),
@@ -698,8 +700,7 @@ namespace wiselib
 		preferred_parent_ ( Radio_IP::NULL_NODE_ID ),
 		old_preferred_parent_ ( Radio_IP::NULL_NODE_ID ),
 		worst_parent_ ( Radio_IP::NULL_NODE_ID ),
-		cur_min_path_cost_ (0xFFFF),
-		no_path_count_ (0)
+		cur_min_path_cost_ (0xFFFF)
 	{}
 	// -----------------------------------------------------------------------
 	template<typename OsModel_P,
@@ -1255,31 +1256,13 @@ namespace wiselib
 		typename Clock_P>
 	void
 	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
-	update_timer_elapsed( void* userdata )
-	{
-		stop_timers_ = false;
-		timer().template set_timer<self_type, &self_type::timer_elapsed>( 1000, this, 0 );
-	}
-
-	// -----------------------------------------------------------------------
-	
-	template<typename OsModel_P,
-		typename Radio_IP_P,
-		typename Radio_P,
-		typename Debug_P,
-		typename Timer_P,
-		typename Clock_P>
-	void
-	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
 	no_path_timer_elapsed( void* userdata )
 	{
-		if( no_path_count_ < NO_PATH_DAO_COUNT )
+		if( !no_path_ack_received_ && !stop_timers_ )  
 		{
 			radio_ip().send( old_preferred_parent_, no_path_reference_number_, NULL );
-			no_path_count_ = no_path_count_ + 1;
-			timer().template set_timer<self_type, &self_type::no_path_timer_elapsed>( 300, this, 0 );
+			timer().template set_timer<self_type, &self_type::no_path_timer_elapsed>( ( rank_ * 100 ) + 500, this, 0 );
 		}
-		no_path_count_ = 0;
 	}
 
 	// -----------------------------------------------------------------------
@@ -1721,10 +1704,10 @@ namespace wiselib
 						packet_pool_mgr_->clean_packet( message );
 						return;				
 					}
-					//stop the current timer
-					//stop_timers_ = true;
+								
 					//create a new message and restart the timer (RFC6550 pag.74)
 					//Should I clean the Forwarding Table????
+					//Don't call first dio
 					first_dio( sender, data, length );
 				}
 		
@@ -1869,7 +1852,7 @@ namespace wiselib
 
 							if ( sender == preferred_parent_ )
 							{	
-								send_no_path_dao();
+								send_no_path_dao( my_global_address_ );
 								#ifdef ROUTING_RPL_DEBUG
 								debug().debug( "\nRPLRouting: CHANGE RANK. FINDING NEW PREFERRED PARENT\n" );
 								#endif
@@ -1930,7 +1913,7 @@ namespace wiselib
 						find_worst_parent();
 						if ( sender == preferred_parent_ ) //Here more complex
 						{	
-							send_no_path_dao();
+							send_no_path_dao( my_global_address_ );
 
 							if ( !parent_set_.empty() )
 							{
@@ -2054,14 +2037,19 @@ namespace wiselib
 				{
 					//verify lifetime... if it is 0 (i.e. NO Path DAO) then delete the entry...
 					//... (only if the SN is new, otherwise I might delete new paths! )
-					if ( data[49] == 0 && (seq_nr > it->second.seq_nr) )
+					//... but if I check whether the link-local sender is the next hop then I don't need the seq number
+					//... thus I can also manage DAO-ACKs with NO-PATH DAOs
+					if ( data[49] == 0 )
 					{
-						radio_ip().routing_.forwarding_table_.erase( it );
+						//Before deleting check if the next hop matches the link-local sender
+						if( it->second.next_hop == sender )
+							radio_ip().routing_.forwarding_table_.erase( it );
 					}
 		
 					else if ( seq_nr < it->second.seq_nr )
 					{
 						//Old DAO message, suppress
+						//it doesn't apply for NO-PATH DAOs, that's perfect
 						packet_pool_mgr_->clean_packet( message );
 						return;
 					}
@@ -2128,6 +2116,16 @@ namespace wiselib
 		else if( typecode == DEST_ADVERT_OBJECT_ACK )
 		{
 			uint8_t rcvd_dao_sequence = data[6];
+			//first verify if it is an ack of a no-path DAO
+			if( rcvd_dao_sequence == current_no_dao_sequence_ )
+			{
+				#ifdef ROUTING_RPL_DEBUG
+				char str3[43];
+				debug().debug( "\nRPL Routing: %s Received NO_PATH DAO-ACK! STOP NO-PATH TIMER...\n", my_address_.get_address(str) );
+				#endif
+				no_path_ack_received_ = true;
+
+			}
 			if( rcvd_dao_sequence == dao_sequence_ )
 			{
 				#ifdef ROUTING_RPL_DEBUG
@@ -2154,6 +2152,9 @@ namespace wiselib
 	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
 	first_dio( node_id_t from, block_data_t *data, uint16_t length )
 	{
+		//WHEN A NEW VERSION IS RECEIVED DON'T CALL first_dio( ... )
+
+
 		char str[43];
 		char str2[43];
 		/*
@@ -2279,6 +2280,7 @@ namespace wiselib
 		{
 			dao_ack_received_ = false;
 			uint8_t dao_length;
+			dao_sequence_ = dao_sequence_ + 1;
 			dao_length = prepare_dao();
 			dao_message_->set_transport_length( dao_length );
 			timer().template set_timer<self_type, &self_type::dao_timer_elapsed>( 300 + current_interval_, this, 0 );
@@ -2998,7 +3000,7 @@ namespace wiselib
 		
 		neighbor_set_.erase( neighbor );
 
-		//IMPORTANT: CLEAN ALSE THE POSSIBLE ENTRY IN THE FORWARDING TABLE
+		//IMPORTANT: CLEAN ALSO THE POSSIBLE ENTRY IN THE FORWARDING TABLE
 		ForwardingTableIterator it_neigh = radio_ip().routing_.forwarding_table_.find( neighbor );
 		radio_ip().routing_.forwarding_table_.erase( it_neigh );
 			
@@ -3129,7 +3131,7 @@ namespace wiselib
 		//Reserved ( default 0 )
 		dao_message_->template set_payload<uint8_t>( &setter_byte, 6, 1 );
 		//dao sequence number, incremented each time a DAO is sent
-		//used to correlate a DAO message and a DAO_ACK message		
+		//used to correlate a DAO message and a DAO_ACK message	
 		dao_message_->template set_payload<uint8_t>( &dao_sequence_, 7, 1 );
 		
 		//DODAG_ID field not present because I'm using a global RPLInstanceID 
@@ -3196,7 +3198,7 @@ namespace wiselib
 		typename Clock_P>
 	void
 	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
-	send_no_path_dao()
+	send_no_path_dao( node_id_t target )
 	{
 		// IT DOESN'T WORK FOR THE MOMENT
 		//Here starts to fill RPL fields
@@ -3210,6 +3212,8 @@ namespace wiselib
 		//used to correlate a DAO message and a DAO_ACK message	
 		dao_sequence_ = dao_sequence_ + 1;
 		no_path_dao_->template set_payload<uint8_t>( &dao_sequence_, 7, 1 );
+
+		current_no_dao_sequence_ = dao_sequence_;
 		//DODAG_ID field not present because I'm using a global RPLInstanceID 
 		//Now add RPL Target option with the relative Transit Information Option
 		setter_byte = RPL_TARGET;
@@ -3223,7 +3227,9 @@ namespace wiselib
 		//Prefix length 16 (Route aggregation not supported, the target prefix is the entire IPv6 address of the target)
 		no_path_dao_->template set_payload<uint8_t>( &setter_byte, 27, 1 );
 
-		no_path_dao_->template set_payload<uint8_t[16]>( &my_global_address_.addr, 28, 1 );
+		//the target is the global address of the unreachable node
+		// (if this function is called from handle_TLV then the target is the unreachable child detected through ND)
+		no_path_dao_->template set_payload<uint8_t[16]>( &target.addr, 28, 1 );
 		//Transit Information Option		
 		setter_byte = TRANSIT_INFORMATION;
 		no_path_dao_->template set_payload<uint8_t>( &setter_byte, 44, 1 );
@@ -3264,6 +3270,7 @@ namespace wiselib
 		no_path_dao_->set_traffic_class(0);
 
 		old_preferred_parent_ = preferred_parent_;
+		no_path_ack_received_ = false;
 		radio_ip().send( old_preferred_parent_, no_path_reference_number_, NULL );
 		//add timer when ready or send it a reasonable amount of times (better)
 		//send_dao( preferred_parent_, no_path_reference_number_, NULL );
@@ -3476,6 +3483,22 @@ namespace wiselib
 					#ifdef ROUTING_RPL_DEBUG
 					debug().debug( "\nRPL Routing: Source %s. FT contains destination %s, next hop is: %s\n", my_global_address_.get_address( str ), destination.get_address(str2), it->second.next_hop.get_address(str3) );
 					#endif
+
+					//CHECK REACHABILITY OF NEXT HOP THROUGH NEIGHBOR DISCOVERY ENTRIES
+					//If not reacheble send no-path DAO and delete entry
+					Neighbors_iterator it_nd = neighbors_.find( it->second.next_hop );
+					if( it_nd == neighbors_.end() )
+					{
+						//send No-path DAO specifying the target!
+						send_no_path_dao( destination );
+						//delete entry
+						ForwardingTableIterator it_dest = radio_ip().routing_.forwarding_table_.find( destination );
+						if( it_dest != radio_ip().routing_.forwarding_table_.end() )
+							radio_ip().routing_.forwarding_table_.erase( it_dest );
+						return Radio_IP::DROP_PACKET;
+					}
+								
+				
 					//SET DOWN BIT = 1, RANK ERROR = 0 (first hop), Forwarding error = 0 : 2^7 = 128
 					data_pointer[2] = 128;
 				}
@@ -3509,6 +3532,17 @@ namespace wiselib
 						#ifdef ROUTING_RPL_DEBUG
 						debug().debug( "\nRPL Routing: I'm %s. destination %s present in my FT, next hop is %s, Change Direction!\n", my_global_address_.get_address(str2), destination.get_address(str), it->second.next_hop.get_address(str3)  );
 						#endif
+						Neighbors_iterator it_nd = neighbors_.find( it->second.next_hop );
+						if( it_nd == neighbors_.end() )
+						{
+							//send No-path DAO specifying the target!
+							send_no_path_dao( destination );
+							//delete entry
+							ForwardingTableIterator it_dest = radio_ip().routing_.forwarding_table_.find( destination );
+							if( it_dest != radio_ip().routing_.forwarding_table_.end() )
+								radio_ip().routing_.forwarding_table_.erase( it_dest );
+							return Radio_IP::DROP_PACKET;
+						}
 						data_pointer[2] = 128;
 					}
 				}
@@ -3539,6 +3573,18 @@ namespace wiselib
 						#ifdef ROUTING_RPL_DEBUG
 						debug().debug( "\nRPL Routing: 1st INTERMEDIATE NODE %s, FT contains destination %s, next hop is %s\n", my_global_address_.get_address(str), destination.get_address(str2), it->second.next_hop.get_address(str3) );
 						#endif
+						//CHECK REACHABILITY OF NEXT HOP
+						Neighbors_iterator it_nd = neighbors_.find( it->second.next_hop );
+						if( it_nd == neighbors_.end() )
+						{
+							//send No-path DAO specifying the target!
+							send_no_path_dao( destination );
+							//delete entry
+							ForwardingTableIterator it_dest = radio_ip().routing_.forwarding_table_.find( destination );
+							if( it_dest != radio_ip().routing_.forwarding_table_.end() )
+								radio_ip().routing_.forwarding_table_.erase( it_dest );
+							return Radio_IP::DROP_PACKET;
+						}
 					
 						//This means that the destination is down
 						//SET DOWN BIT = 1, RANK ERROR = 0 (first hop), Forwarding error = 0 : 2^7 = 128
@@ -3660,6 +3706,19 @@ namespace wiselib
 							#ifdef ROUTING_RPL_DEBUG
 							debug().debug( "\nRPL Routing: Node %s INTERMEDIATE NODE, I have the routing Information for dest: %s, next hop is: %s! Going down again\n", my_global_address_.get_address(str), destination.get_address(str2), it->second.next_hop.get_address(str3) );
 							#endif
+
+							//CHECK REACHABILITY OF NEXT HOP
+							Neighbors_iterator it_nd = neighbors_.find( it->second.next_hop );
+							if( it_nd == neighbors_.end() )
+							{
+								//send No-path DAO specifying the target!
+								send_no_path_dao( destination );
+								//delete entry
+								ForwardingTableIterator it_dest = radio_ip().routing_.forwarding_table_.find( destination );
+								if( it_dest != radio_ip().routing_.forwarding_table_.end() )
+									radio_ip().routing_.forwarding_table_.erase( it_dest );
+								return Radio_IP::DROP_PACKET;
+							}
 							data_pointer[4] = (uint8_t) (rank_ >> 8 );
 							data_pointer[5] = (uint8_t) (rank_ );
 							radio_ip().routing_.print_forwarding_table();
@@ -3677,6 +3736,19 @@ namespace wiselib
 								#ifdef ROUTING_RPL_DEBUG
 								debug().debug( "\nRPL Routing: Node %s INTERMEDIATE NODE, I have the routing Information for dest: %s, next hop is: %s! Change Direction\n", my_global_address_.get_address(str), destination.get_address(str2), it->second.next_hop.get_address(str3) );
 								#endif
+
+								//CHECK REACHABILITY OF NEXT HOP
+								Neighbors_iterator it_nd = neighbors_.find( it->second.next_hop );
+								if( it_nd == neighbors_.end() )
+								{
+									//send No-path DAO specifying the target!
+									send_no_path_dao( destination );
+									//delete entry
+									ForwardingTableIterator it_dest = radio_ip().routing_.forwarding_table_.find( destination );
+									if( it_dest != radio_ip().routing_.forwarding_table_.end() )
+										radio_ip().routing_.forwarding_table_.erase( it_dest );
+									return Radio_IP::DROP_PACKET;
+								}
 								//SET DOWN BIT = 1
 								data_pointer[2] = 128;
 								data_pointer[4] = (uint8_t) (rank_ >> 8 );
