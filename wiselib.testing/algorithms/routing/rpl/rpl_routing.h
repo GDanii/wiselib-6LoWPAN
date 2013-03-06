@@ -1218,7 +1218,7 @@ namespace wiselib
 
 		}
 		
-		//Enter here just once per 'new version DIO'
+		//Enter if a 'new version DIO' has been received (this happens when the timer of the new version expires before the old one)
 		else if ( version_last_time_ != version_number_ )
 		{
 			if ( 2 * current_interval_ < max_interval_ )
@@ -1284,7 +1284,6 @@ namespace wiselib
 
 	// -----------------------------------------------------------------------
 	
-	//TRICKLE TIMER ALSO FOR DAOs?
 	template<typename OsModel_P,
 		typename Radio_IP_P,
 		typename Radio_P,
@@ -1295,7 +1294,7 @@ namespace wiselib
 	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
 	dao_timer_elapsed( void* userdata )
 	{
-		//this timer must be directly proportional to the rank when no aggregation is not supported (rank_*100 + something??) 
+		//this timer must be directly proportional to the rank when aggregation is not supported (rank_*100 + something??) 
 		if( !dao_ack_received_ && !stop_timers_ )
 		{
 			send_dao( preferred_parent_, dao_reference_number_, NULL );
@@ -1338,8 +1337,6 @@ namespace wiselib
 
 	// -----------------------------------------------------------------------
 		
-	// -----------------------------------------------------------------------
-	
 	template<typename OsModel_P,
 		typename Radio_IP_P,
 		typename Radio_P,
@@ -1351,7 +1348,7 @@ namespace wiselib
 	threshold_timer_elapsed( void* userdata )
 	{
 		
-		if ( dio_count_ < dio_redund_const_)
+		if ( dio_count_ < dio_redund_const_ )
 			send_dio( Radio_IP::BROADCAST_ADDRESS, dio_reference_number_, NULL );
 	}
 	// -----------------------------------------------------------------------
@@ -1367,14 +1364,14 @@ namespace wiselib
 	floating_timer_elapsed( void* userdata )
 	{
 		//Before creating a Floating DODAG there's the need to understand how long it takes for a DIO to reach all the network
-		if ( state_ == Unconnected )
+		if ( state_ == Unconnected && ALLOW_FLOATING_ROOT != 0 )
 		{
 			#ifdef ROUTING_RPL_DEBUG
 			char str[43];
 			debug().debug( "\nRPL Routing: %s CREATE FLOATING DODAG\n", my_address_.get_address(str) );
 			#endif
 			
-			/*
+			
 			state_ = Floating_Dodag_root;   //not for a long period of time, especiallly if battery powered
 			version_number_ = 1;
 			imin_ = 2 << (dio_int_min_ - 1);
@@ -1412,8 +1409,6 @@ namespace wiselib
 			//timer after which I need to send the DIO message
 			timer().template set_timer<self_type, &self_type::threshold_timer_elapsed>( 
 						sending_threshold_, this, 0 );
-			
-			*/	
 		}
 		
 		
@@ -1432,8 +1427,6 @@ namespace wiselib
 	ETX_timer_elapsed( void *userdata )
 	{
 		uint8_t addr[16];
-
-		//debug().debug( "\nDATA %d \n", ((uint8_t*)userdata)[0] );
 
 		memcpy(addr, (uint8_t*)(userdata) ,16);
 		
@@ -1509,7 +1502,6 @@ namespace wiselib
 			return;
 		}
 		
-		
 		data = message->payload();
 		
 		uint8_t typecode = data[0];
@@ -1521,8 +1513,7 @@ namespace wiselib
 		//RECEIVED CHECKSUM IS ALWAYS 0, don't check it
 		
 		//need to process only type 155, ignore the others for now... so terminate if type != 155
-		//What about data messages that contain a RPL Option? TO UPDATE when ready to send data packets
-		
+				
 		if( typecode != RPL_CONTROL_MESSAGE )
 		{
 			//packet_pool_mgr_->clean_packet( message );
@@ -1671,18 +1662,8 @@ namespace wiselib
 
 			if( state_ == Unconnected)	
 			{	
-				//first_dio() need to be called only if the message contains the DODAG_CONFIGURATION_OPTION
-				//To check this I only need to verify whether the length of the payload is more than 28 bytes...
-				//... and the first option is DODAG_CONFIGURATION_OPTION (suppose it is always placed before the others)
-				//To update in order for this option to be placed everywhere (or not?)		
-			
 				
-				if ( length <= 28 ) 
-				{
-					//There's no configuration option
-					packet_pool_mgr_->clean_packet( message );
-					return;
-				}
+				//The presence of configuration option is checked within first_dio
 
 				#ifdef ROUTING_RPL_DEBUG
 				debug().debug( "RPL Routing: State = Unconnected... calling first_dio function\n" );
@@ -1731,12 +1712,9 @@ namespace wiselib
 						packet_pool_mgr_->clean_packet( message );
 						return;
 					}
-					if ( length <= 28 ) 
-					{
-						//There's no configuration option
-						packet_pool_mgr_->clean_packet( message );
-						return;
-					}
+					
+					//The presence of Configuration Option is checked within first_dio
+
 					//Join new version only if the neighbor is reachable (this is done in first DIO)
 					if( ! scan_neighbor( sender ) )
 					{
@@ -1744,15 +1722,15 @@ namespace wiselib
 						return;				
 					}
 					//stop the current timer
-					stop_timers_ = true;
+					//stop_timers_ = true;
 					//create a new message and restart the timer (RFC6550 pag.74)
+					//Should I clean the Forwarding Table????
 					first_dio( sender, data, length );
 				}
 		
 				//same version
 				else
 				{
-										
 					uint16_t parent_rank = ( data[6] << 8 ) | data[7];
 					uint16_t parent_path_cost;
 					uint16_t rank_inc;
@@ -2041,53 +2019,9 @@ namespace wiselib
 		{
 			
 			//MOP = 1 is Non-storing mode
-			
 			if (mop_ == 1)
 			{
-				/*
-				//if I'm the root store in the routing table
-				//... otherwise forward the message to the next hop
-				//THIS IS ACCOMPLISHED BY THE ROUTE OVER MECHANISM, TO UPDATE!
-				if ( state_ == Dodag_root || state_ == Floating_Dodag_root )
-				{					
-					uint8_t addr[16];
-					memcpy(addr, data + 34 ,16);
-					//This address needs to be rearranged before setting it
-					uint8_t k = 0;
-					for( uint8_t i = 15; i>7; i--)
-					{
-						uint8_t temp;
-						temp = addr[i];
-						addr[i] = addr[k];
-						addr[k] = temp;
-						k++;
-					}
-					
-					//MODIFY HERE
-					node_id_t transit;
-					transit.set_address(addr);
-
-					transit_table_.insert( rt_pair_t ( sender, transit ) );
-
-					#ifdef ROUTING_RPL_DEBUG
-					//char str[43];
-					//char str2[43];
-					if (state_ == Dodag_root )					
-						debug().debug( "\nRPL Routing: ROOT Received DAO from %s with transit %s\n", sender.get_address(str), transit.get_address(str2) );
-					else 
-						debug().debug( "\nRPL Routing: FLOATING ROOT Received DAO from %s with transit %s\n", sender.get_address(str), transit.get_address(str2) );
-					#endif
-					packet_pool_mgr_->clean_packet( message );
-					return;
-				}
-				else
-				{
-					//DAO received by a wrong node: in Non-Storing mode the receiver must be the root
-					//Try to understand how to manage this situation, even though it should not happen
-					packet_pool_mgr_->clean_packet( message );
-					return;
-				}
-				*/
+				//Not supported for the moment
 			}
 			
 			//Storing mode
@@ -2275,6 +2209,9 @@ namespace wiselib
 			#endif
 			return;
 		}
+
+		stop_timers_ = true;
+		radio_ip().routing_.forwarding_table_.clear();
 				
 		//Now, since the CONFIGURATION_OPTION and PREFIX INFORMATION ARE PRESENT I CAN START SCANNING ALL THE OPTIONS		
 		//TO DO!!!!!!!	if else ( RIO )
@@ -2307,13 +2244,8 @@ namespace wiselib
 		//Fill the RT
 		Forwarding_table_value entry( from, 0, 0, 0 );
 		
-		//Or Null_node_id instead of dodag_id??? Already done in set_firsts_dio_fields, is this necessary?
-		//radio_ip().routing_.forwarding_table_.insert( ft_pair_t( dodag_id_, entry ) );
-	
 		//In storing mode ipv6 source and destination addresses inside a DAO must be link-local
 					
-		//WHEN READY TO AGGREGATE USE DAO TIMER!
-				
 		//if( mop_ == 1 )
 			//send_dao( dodag_id_, dao_reference_number_, NULL );
 			//unicast dao and start timer counting the number of transmission
@@ -2349,7 +2281,6 @@ namespace wiselib
 			uint8_t dao_length;
 			dao_length = prepare_dao();
 			dao_message_->set_transport_length( dao_length );
-			//send_dao( preferred_parent_, dao_reference_number_, NULL );
 			timer().template set_timer<self_type, &self_type::dao_timer_elapsed>( 300 + current_interval_, this, 0 );
 		}
 	}
@@ -2367,7 +2298,6 @@ namespace wiselib
 	options_check( block_data_t *data, uint16_t length_checked, uint16_t length, node_id_t sender )
 	{
 		
-		//uint16_t length_checked = 44; 
 		uint8_t option_type = data[ length_checked ]; 
 		uint8_t option_length = data[ length_checked + 1 ];
 		bool isMetric = false;
@@ -2522,9 +2452,7 @@ namespace wiselib
 	{
 		uint8_t option_type = data[ length_checked ];
 		uint8_t option_length = data[ length_checked + 1 ];
-		//uint16_t length_checked = 28; 
-		
-		
+				
 		#ifdef ROUTING_RPL_DEBUG
 		debug().debug( "\nRPL Routing: Scanning DODAG_CONFIGURATION_OPTION!\n" );
 		#endif
@@ -2739,7 +2667,7 @@ namespace wiselib
 		dio_message_->template set_payload<uint8_t>( &version_number_, position + 1, 1 );
 		dio_message_->template set_payload<uint16_t>( &rank_, position + 2, 1 );
 		uint8_t setter_byte = 0;
-		if ( grounded )//1(grounded) 0(predefined) 010(MOP = 2 Storing mode) 000(default prf) = 2^7 + 2^4 = 144
+		if ( grounded ) //1(grounded) 0(predefined) 010(MOP = 2 Storing mode) 000(default prf) = 2^7 + 2^4 = 144
 			setter_byte = 128 + ( mop_ << 3 );
 		else
 			setter_byte = ( mop_ << 3 );
