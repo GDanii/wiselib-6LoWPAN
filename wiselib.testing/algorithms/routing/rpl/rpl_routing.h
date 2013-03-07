@@ -124,6 +124,9 @@ namespace wiselib
 
 		typedef vector_static<OsModel, Mapped_erase_node, 20> Erase_list;
 		typedef typename wiselib::vector_static<OsModel, Mapped_erase_node, 20>::iterator Erase_list_iterator;
+
+		typedef vector_static<OsModel, Mapped_erase_node, PARENT_SET_SIZE> Erase_parent_list;
+		typedef typename wiselib::vector_static<OsModel, Mapped_erase_node, PARENT_SET_SIZE>::iterator Erase_parent_list_iterator;
 				
 		struct Mapped_neighbor_set
 		{
@@ -562,6 +565,8 @@ namespace wiselib
 		Erase_list erase_list_;
 
 		NeighborSet neighbor_set_;
+
+		Erase_parent_list erase_parent_list_;
 
 		ParentSet parent_set_;
 	
@@ -1786,10 +1791,11 @@ namespace wiselib
 					//process only messages sent by nodes whose rank is lower or greater than the rank of the actual node
 					if (parent_path_cost == rank_ )
 					{
+						//Not significant update
 						packet_pool_mgr_->clean_packet( message );
 						return;	
 					}
-					if (parent_path_cost < rank_ )  //to add the equality? No
+					if (parent_path_cost < rank_ )
 					{
 						if( ! scan_neighbor( sender ) )
 						{
@@ -1809,10 +1815,7 @@ namespace wiselib
 								//... otherwise return
 								ParentSet_iterator it_worst = parent_set_.find( worst_parent_ );
 								if( it_worst->second.path_cost > parent_path_cost )
-								{
 									parent_set_.erase( worst_parent_ );
-									find_worst_parent();
-								}
 								else
 								{
 									packet_pool_mgr_->clean_packet( message );
@@ -1825,7 +1828,9 @@ namespace wiselib
 							//check if it is beter than the preferred parent, if so trigger update
 							//and delete parents whose rank is higher now!
 							
-							if( parent_path_cost < cur_min_path_cost_ )
+														
+
+							if( parent_path_cost < (cur_min_path_cost_ - PARENT_SWITCH_THRESHOLD) )
 							{	
 								//should I stop the timers??? NO JUST CHANGE THE VALUES IN DIO MESSAGE
 								update_dio( sender, parent_path_cost); 
@@ -1858,7 +1863,6 @@ namespace wiselib
 
 							if ( sender == preferred_parent_ )
 							{	
-								send_no_path_dao( my_global_address_ );
 								#ifdef ROUTING_RPL_DEBUG
 								debug().debug( "\nRPLRouting: CHANGE RANK. FINDING NEW PREFERRED PARENT\n" );
 								#endif
@@ -1875,15 +1879,13 @@ namespace wiselib
 								}
 															
 								if ( best != sender )
-								{
-									//NEW PREFERRED PARENT
-								 	preferred_parent_ = best;
-									radio_ip().routing_.forwarding_table_[Radio_IP::NULL_NODE_ID].next_hop = preferred_parent_;
-								}
-																
+									send_no_path_dao( my_global_address_ );
+							
+								update_dio( best, current_best_path_cost );
+					
 								//CHANGE THE RANK NODE ANYWAY AND ADVERTISE CHILDREN, HOW, FIRST_DIO????
 								//BUT WITH FIRST_DIO THE PARENT SET IS CLEARED! 
-								update_dio( sender, current_best_path_cost );
+								
 								
 								find_worst_parent();
 								//SEND DAO, Change the DaoSequenceNumber and PathSequence
@@ -1900,92 +1902,76 @@ namespace wiselib
 							}
 							else
 							{
-								//if( parent_path_cost > rank_ ) //impossible
+								//if the parent is present update it because its rank has changed
+								//it is present, I already have the pointer 'it'
+								
+								it->second.path_cost = parent_path_cost;
 								find_worst_parent();
 								packet_pool_mgr_->clean_packet( message );
 								return;	
 							}
+						}
+						else
+						{
+							//Not significant update: same cost
+							packet_pool_mgr_->clean_packet( message );
+							return;	
 						}
 					}
 
 					else
 					{	
 						//parent_path_cost > rank
-						//delete parent from the parent set
-						parent_set_.erase( sender );
-						ForwardingTableIterator it_parent = radio_ip().routing_.forwarding_table_.find( sender );
-						radio_ip().routing_.forwarding_table_.erase( it_parent );
-
-						find_worst_parent();
+						
 						if ( sender == preferred_parent_ ) //Here more complex
 						{	
-							send_no_path_dao( my_global_address_ );
-
-							if ( !parent_set_.empty() )
-							{
-								#ifdef ROUTING_RPL_DEBUG
-								debug().debug( "\nRPLRouting: FINDING NEW PREFERRED PARENT\n" );
-								#endif
-								node_id_t best = Radio_IP::NULL_NODE_ID;
-								uint16_t current_best_path_cost = 0xFFFF;
+							ParentSet_iterator it_parent = parent_set_.find( sender );
+							it_parent->second.path_cost = parent_path_cost;
+							//send no-path only if the preferred parent changes
+							
+							#ifdef ROUTING_RPL_DEBUG
+							debug().debug( "\nRPLRouting: FINDING NEW PREFERRED PARENT\n" );
+							#endif
+							node_id_t best = Radio_IP::NULL_NODE_ID;
+							uint16_t current_best_path_cost = 0xFFFF;
 		
-								for (ParentSet_iterator it = parent_set_.begin(); it != parent_set_.end(); it++)
-								{
-									if ( it->second.path_cost < current_best_path_cost )
-									{
-										current_best_path_cost = it->second.path_cost;
-										best = it->first;
-									}
-								}
-															
-								//NEW PREFERRED PARENT
-								update_dio( sender, current_best_path_cost);
-
-								//SEND DAO, Change the DaoSequenceNumber and PathSequence
-								//REMEMBER TO WRAP AROUND WHEN REACHING THE VALUE LIMIT
-															
-								dao_ack_received_ = false;
-								dao_sequence_ = dao_sequence_ + 1;
-								dao_message_->template set_payload<uint8_t>( &dao_sequence_, 7, 1 );
-								path_sequence_ = path_sequence_ + 1;
-								dao_message_->template set_payload<uint8_t>( &path_sequence_, 48, 1 );
-								//DAO sent automatically thanks to the timer
-							}
-							else
+							for (ParentSet_iterator it = parent_set_.begin(); it != parent_set_.end(); it++)
 							{
-								//IT Seems that it works, make it more robust anyway 
-								if (mop_set_)
+								if ( it->second.path_cost < current_best_path_cost )
 								{
-									worst_parent_ = Radio_IP::NULL_NODE_ID;
-									#ifdef ROUTING_RPL_DEBUG
-									debug().debug( "\nRPLRouting: NO MORE PARENTS, ADVERTISE INFINITE RANK\n" );
-									#endif
-									//NO MORE PARENTS!!!! MANAGE IT
-									rank_ = INFINITE_RANK;
-									state_ = Unconnected;
-									preferred_parent_ = Radio_IP::NULL_NODE_ID;
-									dio_message_->template set_payload<uint16_t>( &rank_, 6, 1 );
-									//This message might not be received by the sub_DODAG
-									//... thus a loop may be created
-									//It seems that there's a sort of self-correction, loops are impossible to occur!
-									//loop possibility: only one node in parent set!!!!!!!!!!
-									send_dio( Radio_IP::BROADCAST_ADDRESS, dio_reference_number_, NULL );  
-
-									//STOP TIMERS?
-									stop_timers_ = true;
-									//send DIS? ...CREATE FLOATING DODAG if no response to DIS received
-									timer().template set_timer<self_type, &self_type::dis_delay>( 1000, this, 0 );	
-									packet_pool_mgr_->clean_packet( message );
-									return;
-								}							
+									current_best_path_cost = it->second.path_cost;
+									best = it->first;
+								}
 							}
+								
+							if( best != preferred_parent_ )
+								send_no_path_dao( my_global_address_ );
+							
+
+							update_dio( best, current_best_path_cost);
+							
+							//SEND DAO, Change the DaoSequenceNumber and PathSequence
+							//REMEMBER TO WRAP AROUND WHEN REACHING THE VALUE LIMIT
+															
+							dao_ack_received_ = false;
+							dao_sequence_ = dao_sequence_ + 1;
+							dao_message_->template set_payload<uint8_t>( &dao_sequence_, 7, 1 );
+							path_sequence_ = path_sequence_ + 1;
+							dao_message_->template set_payload<uint8_t>( &path_sequence_, 48, 1 );
+							//DAO sent automatically thanks to the timer
+							
+						
 						}
 								
 						else
 						{
-							packet_pool_mgr_->clean_packet( message );
-							return;	
+							//if the parent is present delete it because the rank is higher than the current one
+							ParentSet_iterator it_parent = parent_set_.find( sender );
+							if( it_parent != parent_set_.end() )
+								parent_set_.erase( sender );
 						}
+						find_worst_parent();
+						
 					}
 				}
 			}
@@ -2824,7 +2810,7 @@ namespace wiselib
 		NeighborSet_iterator it = neighbor_set_.find( from );
 		if (it == neighbor_set_.end())
 		{
-
+			/*
 			Mapped_neighbor_set map;
 			//If I receive this message it means that the neighbor has received my request message
 			map.bidirectionality = false; 
@@ -2841,6 +2827,7 @@ namespace wiselib
 			#ifdef ROUTING_RPL_DEBUG
 			debug().debug( "\nRPL Routing: NEIGHBOR IS 5 RIGHT NOW\n" );
 			#endif
+			*/
 			return false;
 		}
 			
@@ -3354,14 +3341,25 @@ namespace wiselib
 
 		//now delete from the parent set entries whose rank is higher than the one of the current node
 		
+
+		erase_parent_list_.clear();
+		
 		//delete all the entry whose rank is higher than the rank of the current node
 		for (ParentSet_iterator it = parent_set_.begin(); it != parent_set_.end(); it++)
 		{
 			if ( it->second.path_cost > rank_ )
-				it->first = Radio_IP::NULL_NODE_ID;
+			{
+				Mapped_erase_node map;
+				map.node = it->first;
+				erase_parent_list_.push_back( map );
+			}
 		}
 		
-		parent_set_.erase ( Radio_IP::NULL_NODE_ID );
+		for( Erase_parent_list_iterator it_er = erase_parent_list_.begin(); it_er != erase_parent_list_.end(); it_er++) 
+		{
+			parent_set_.erase( it_er->node );
+		}
+		
 	}
 
 	// -----------------------------------------------------------------------		
