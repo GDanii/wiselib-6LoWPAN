@@ -113,8 +113,6 @@ namespace wiselib
 
 		//typedef typename Timer::millis_t millis_t;
 
-		//typedef IPv6Address<Radio, Debug> IPv6Address_t;
-
 		typedef MapStaticVector<OsModel, node_id_t, uint8_t, 20> Neighbors;
 		typedef wiselib::pair<node_id_t, uint8_t> n_pair_t;
 		typedef typename wiselib::MapStaticVector<OsModel, node_id_t, uint8_t, 20>::iterator Neighbors_iterator;
@@ -456,20 +454,28 @@ namespace wiselib
 		//Don't know why the RFC specifies the rank as a fixed point number even though the fractional part is never used!?
 		//...maybe for implementations of OFs different from OF0
 		//see RFC6550 pag. 22
-		uint8_t DAGRank (uint16_t rank)
+
+		
+		uint16_t DAGRank( uint16_t rank )
 		{			
+			if( etx_ )
+				return rank_;
 			float num = (float)(rank>>8)/(float)min_hop_rank_increase_;
-			//
+			
 			uint8_t int_part = (uint8_t)num;
 			return int_part;
 			
 		}
 
+		//RFC 6551: Rank value = ETX * 128, where 128 is the min_hop_rank_increase
+		/*
 		uint16_t increase_rank( uint16_t parent_rank, float rank_inc )
 		{
 			uint8_t int_part;
 
 			uint8_t dec_part;
+
+			uint16_t through_parent = parent_rank + (uint16_t)rank_inc;
 			
 			if(rank_inc < min_hop_rank_increase_)
 			{
@@ -491,6 +497,7 @@ namespace wiselib
 			
 			return return_value;
 		}
+		*/
 		
 		
 		// -------------------------------------------------------------------------------------------------
@@ -833,13 +840,10 @@ namespace wiselib
 			state_ = Dodag_root;
 			if( etx_ )
 			{
-				min_hop_rank_increase_ = 8; //if integral part of rank is 8 bit, then max 32 hops
-				rank_ = ( min_hop_rank_increase_ << 8 );
+				min_hop_rank_increase_ = 128;
+				rank_ = min_hop_rank_increase_;
 				#ifdef ROUTING_RPL_DEBUG
-				uint8_t int_part = (rank_ >> 8);
-				uint16_t dec_part = (rank_ << 8);
-				dec_part = (dec_part >> 8);
-				debug().debug( "RPLRouting: Root, set rank: int part %i, dec part %i \n", int_part, dec_part  );
+				debug().debug( "RPLRouting: Root, set rank:  %i\n", rank_ );
 				#endif
 				
 			}
@@ -1743,9 +1747,11 @@ namespace wiselib
 							float forward = 1/((float)it->second.etx_forward);
 							float reverse = 1/((float)it->second.etx_reverse);
 
-							rank_inc = 1/(forward * reverse);
+							rank_inc = min_hop_rank_increase_ * (1/(forward * reverse));
 
-							parent_path_cost = increase_rank( parent_rank, rank_inc );
+							parent_path_cost = rank_inc + parent_rank;
+
+							//parent_path_cost = increase_rank( parent_rank, rank_inc );
 										
 						}
 						else
@@ -2574,25 +2580,24 @@ namespace wiselib
 				float forward = 1/((float)it->second.etx_forward);
 				float reverse = 1/((float)it->second.etx_reverse);
 
-				rank_increase_ = 1/(forward * reverse);
+				rank_increase_ =  min_hop_rank_increase_ * (1/(forward * reverse));
 
 				#ifdef ROUTING_RPL_DEBUG
 				char str[43];
 				
 				debug().debug( "\n\n\nRPL Routing: %s, Rank Increase is %f, forward %f, reverse %f, min_hop %i \n\n", my_address_.get_address(str), rank_increase_, forward, reverse, min_hop_rank_increase_ );
 				#endif
-				
-				rank_ = increase_rank( parent_rank, rank_increase_ );
+
+				rank_ = rank_increase_ + parent_rank;
+
+				//rank_ = increase_rank( parent_rank, rank_increase_ );
+
 				cur_min_path_cost_ = rank_;
 				map.path_cost = cur_min_path_cost_;
 				map.metric_type = LINK_ETX;
 			
 				#ifdef ROUTING_RPL_DEBUG
-				//char str[43];
-				uint8_t int_part = (rank_ >> 8);
-				uint16_t dec_part = (rank_ << 8);
-				dec_part = (dec_part >> 8);
-				debug().debug( "\n\n\nRPL Routing: %s, New Rank is : int part %i, dec part %i... RANK %i\n\n", my_address_.get_address(str), int_part, dec_part, (rank_ >> 8)  );
+				debug().debug( "\n\n\nRPL Routing: %s, New Rank is : %i\n\n", my_address_.get_address(str), rank_ );
 				#endif
 
 			}
@@ -3399,9 +3404,9 @@ namespace wiselib
 				uint8_t rank_error = (flags << 1);
 				rank_error = ( rank_error >> 7 );
 				uint16_t sender_rank = ( data_pointer[4] << 8 ) | data_pointer[5];
-				uint8_t compare_rank = DAGRank( sender_rank );
+				uint16_t compare_rank = DAGRank( sender_rank );
 				#ifdef ROUTING_RPL_DEBUG
-				debug().debug( "\nRPL Routing: FINAL DESTINATION, my rank is %i\n", DAGRank(rank_) );
+				debug().debug( "\nRPL Routing: FINAL DESTINATION, my rank is %i\n", DAGRank( rank_ ) );
 				#endif
 
 				if( compare_rank == 0 )
@@ -3465,7 +3470,7 @@ namespace wiselib
 				}
 
 				#ifdef ROUTING_RPL_DEBUG
-				debug().debug( "\nRPL Routing: SOURCE NODE, my rank is %i\n", DAGRank(rank_) );
+				debug().debug( "\nRPL Routing: SOURCE NODE, my rank is %i\n", DAGRank( rank_ ) );
 				#endif				
 				
 				//first node, fill the HOHO EH fields
@@ -3558,9 +3563,9 @@ namespace wiselib
 				uint8_t rank_error = (flags << 1);
 				rank_error = ( rank_error >> 7 );
 				uint16_t sender_rank = ( data_pointer[4] << 8 ) | data_pointer[5];
-				uint8_t compare_rank = DAGRank( sender_rank );
+				uint16_t compare_rank = DAGRank( sender_rank );
 				#ifdef ROUTING_RPL_DEBUG
-				debug().debug( "\nRPL Routing: INTERMEDIATE NODE, my rank is %i\n", DAGRank(rank_) );
+				debug().debug( "\nRPL Routing: INTERMEDIATE NODE, my rank is %i\n", DAGRank( rank_ ) );
 				#endif
 				if( compare_rank == 0 )
 				{
