@@ -31,8 +31,8 @@
 
 #include "config.h"
 
-#define DEFAULT_DIO_INTERVAL_MIN 3	//Imin    2^3 ms
-#define DEFAULT_DIO_INTERVAL_DOUBLINGS 20	//Imax   (2^20)*Imin ms
+#define DEFAULT_DIO_INTERVAL_MIN 3	//Imin    2^3 (ms)
+#define DEFAULT_DIO_INTERVAL_DOUBLINGS 20	//Imax   (2^20)*Imin (ms)
 #define DEFAULT_DIO_REDUNDANCY_CONSTANT 10	//k
 
 #define DEFAULT_DAO_DELAY 1000
@@ -220,7 +220,7 @@ namespace wiselib
 		enum ObjectiveFunctionTypes
 		{
 			OF0 = 0,  //In this case the rank is not considered a fixed point number, but an integer
-			MRHOF = 1,  //Minimum Rank with Hysteresis Objective Function
+			MRHOF = 1,  //Minimum Rank with Hysteresis Objective Function (only ETX avilable for the moment)
 			OF2 = 2,
 			OF3 = 3
 		};
@@ -269,15 +269,11 @@ namespace wiselib
 		{
 			radio_ip_ = &radio_ip;
 			radio_ = &radio;
-			
 			debug_ = &debug;
 			timer_ = &timer;
-			
 			clock_ = &clock;
 			packet_pool_mgr_ = p_mgr;
-			
 			return SUCCESS;
-		
 		}
 
 		inline int init();
@@ -413,7 +409,6 @@ namespace wiselib
 			return clock().seconds( t );
  		}
 		
-		
 		uint16_t milliseconds( time_t t )
 		{
 			return clock().milliseconds( t );
@@ -424,7 +419,6 @@ namespace wiselib
 		{				
 			if (num == 0)
 			{
-				time_t prova = time();
 				uint32_t t = milliseconds(time()) + 1000*seconds(time());
 				current_interval_ = (t % (imax_ - imin_)) + imin_;
 							
@@ -458,7 +452,6 @@ namespace wiselib
 		//...maybe for implementations of OFs different from OF0
 		//see RFC6550 pag. 22
 
-		
 		uint16_t DAGRank( uint16_t rank )
 		{			
 			if( etx_ )
@@ -470,7 +463,7 @@ namespace wiselib
 			
 		}
 
-		//RFC 6551: Rank value = ETX * 128, where 128 is the min_hop_rank_increase
+		//RFC 6551: If ETX is used Rank value = ETX * 128, where 128 is the min_hop_rank_increase
 		/*
 		uint16_t increase_rank( uint16_t parent_rank, float rank_inc )
 		{
@@ -724,7 +717,6 @@ namespace wiselib
 	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
 	~RPLRouting()
 	{
-		
 		#ifdef ROUTING_RPL_DEBUG
 		debug().debug( "RPLRouting: Destroyed\n" );
 		#endif
@@ -888,7 +880,6 @@ namespace wiselib
 		setter_byte = DEST_ADVERT_OBJECT;
 		dao_message_->template set_payload<uint8_t>( &setter_byte, 1, 1 );
 		no_path_dao_->template set_payload<uint8_t>( &setter_byte, 1, 1 );
-
 			
 		timer().template set_timer<self_type, &self_type::start2>( 2000, this, 0 );
 		
@@ -947,11 +938,8 @@ namespace wiselib
 			if (ocp_ != 0 && !etx_ )
 			{
 				//-----------------------------FILLING THE OPTIONS-----------------------------------------
-
-				
 				//NB: HOP COUNT Constraint and Metric must be placed in different Containers (RFC 6551)
 				dio_current_position = add_hopcount_metric( true, dio_current_position ); //Constraint
-			
 				dio_current_position = add_hopcount_metric( false, dio_current_position ); //Metric
 			}
 			
@@ -1049,7 +1037,6 @@ namespace wiselib
 		dio_message_->set_destination_address(destination);
 		dio_message_->set_flow_label(0);
 		dio_message_->set_traffic_class(0);
-
 		
 		radio_ip().send( destination, len, data );
 	
@@ -1081,7 +1068,6 @@ namespace wiselib
 		dao_message_->set_destination_address(destination);
 		dao_message_->set_flow_label(0);
 		dao_message_->set_traffic_class(0);
-
 		
 		radio_ip().send( destination, len, data );
 	
@@ -1214,8 +1200,7 @@ namespace wiselib
 		
 			//initialize sending threshold
 			compute_sending_threshold();
-		
-		
+				
 			//timer after which I must double the timer value (if I don't detect inconsistencies)
 			timer().template set_timer<self_type, &self_type::timer_elapsed>(
 						current_interval_, this, 0 );
@@ -1225,7 +1210,6 @@ namespace wiselib
 					sending_threshold_, this, 0 );	
 			
 			version_last_time_ = version_number_;
-
 		}
 		
 		//Enter if a 'new version DIO' has been received (this happens when the timer of the new version expires before the old one)
@@ -1238,8 +1222,7 @@ namespace wiselib
 		
 			//initialize sending threshold
 			compute_sending_threshold();
-		
-		
+				
 			//timer after which I must double the timer value (if I don't detect inconsistencies)
 			timer().template set_timer<self_type, &self_type::timer_elapsed>(
 						current_interval_, this, 0 );
@@ -1250,9 +1233,7 @@ namespace wiselib
 			
 			version_last_time_ = version_number_;
 			stop_timers_ = false;
-			
 		}
-			
 	}
 
 	// -----------------------------------------------------------------------
@@ -1339,7 +1320,6 @@ namespace wiselib
 	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
 	threshold_timer_elapsed( void* userdata )
 	{
-		
 		if ( dio_count_ < dio_redund_const_ )
 			send_dio( Radio_IP::BROADCAST_ADDRESS, dio_reference_number_, NULL );
 	}
@@ -1362,8 +1342,7 @@ namespace wiselib
 			char str[43];
 			debug().debug( "\nRPL Routing: %s CREATE FLOATING DODAG\n", my_address_.get_address(str) );
 			#endif
-			
-			
+						
 			state_ = Floating_Dodag_root;   //not for a long period of time, especiallly if battery powered
 			version_number_ = 1;
 			imin_ = 2 << (dio_int_min_ - 1);
@@ -1402,8 +1381,6 @@ namespace wiselib
 			timer().template set_timer<self_type, &self_type::threshold_timer_elapsed>( 
 						sending_threshold_, this, 0 );
 		}
-		
-		
 	}
 	
 	// -----------------------------------------------------------------------
@@ -1456,7 +1433,6 @@ namespace wiselib
 	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
 	receive( node_id_t from, size_t packet_number, block_data_t *data )
 	{
-		
 		char str[43];
 		char str2[43];
 		
@@ -1530,8 +1506,7 @@ namespace wiselib
 
 				packet_pool_mgr_->clean_packet( message );				
 				return;
-				
-						
+							
 			}
 			else if( neigh_msg_type == 2 )
 			{
@@ -1639,7 +1614,6 @@ namespace wiselib
 			return;
 		}
 				
-		
 		//DIO message
 		if ( typecode == DODAG_INF_OBJECT )
 		{
@@ -1650,7 +1624,6 @@ namespace wiselib
 				packet_pool_mgr_->clean_packet( message );
 				return;
 			}
-
 
 			if( state_ == Unconnected)	
 			{	
@@ -1716,7 +1689,9 @@ namespace wiselib
 								
 					//create a new message and restart the timer (RFC6550 pag.74)
 					//Should I clean the Forwarding Table????
-					//Don't call first dio
+					//Don't call first dio! 
+					//(this is because there's the possibility to mantain the connectivity to an old topology version)
+					//understand what are the rules that let the node to migrate to the new version
 					first_dio( sender, data, length );
 				}
 		
@@ -1726,8 +1701,9 @@ namespace wiselib
 					uint16_t parent_rank = ( data[6] << 8 ) | data[7];
 					uint16_t parent_path_cost;
 					uint16_t rank_inc;
-					//update_dio ( sender, parent_rank )
-				
+					
+					//first compute the possible path cost through this neighbor...
+					//... then decide if it is a candidate parent	
 					if (ocp_ == 0 )
 					{
 						rank_inc = ((rank_factor_ * step_of_rank_) + rank_stretch_ ) * min_hop_rank_increase_;
@@ -1781,17 +1757,21 @@ namespace wiselib
 					uint8_t grounded = data[8];
 					grounded = (grounded >> 7);
 					map.grounded = grounded;			
-					
-					
+										
 					dio_count_ = dio_count_ + 1;
 
 					//the rank is relative to the preferred parent! ...
 					//the node need to store the rank for each parent in the parent set
 
-					//process only messages sent by nodes whose rank is lower or greater than the rank of the actual node
+					//TO COMPARE RANK OR PARENT PATH COST? REMEMBER, THEY ARE DIFFERENT!!!! (TO UNDESRTAND...)
 					if (parent_path_cost == rank_ )
 					{
-						//Not significant update
+						//this may be a candidate parent, to add in the parent set anyway!!!!
+
+
+						//DO IT!
+			
+
 						packet_pool_mgr_->clean_packet( message );
 						return;	
 					}
@@ -1827,9 +1807,8 @@ namespace wiselib
 							find_worst_parent();
 							//check if it is beter than the preferred parent, if so trigger update
 							//and delete parents whose rank is higher now!
-							
-														
-
+																					
+							//change preferred parent only if this parent is at least 1.5-better
 							if( parent_path_cost < (cur_min_path_cost_ - PARENT_SWITCH_THRESHOLD) )
 							{	
 								//should I stop the timers??? NO JUST CHANGE THE VALUES IN DIO MESSAGE
@@ -1877,20 +1856,16 @@ namespace wiselib
 										best = it->first;
 									}
 								}
-															
+								
+								//FIRST SEND NO PATH DAO to the old preferred parent			
 								if ( best != sender )
 									send_no_path_dao( my_global_address_ );
 							
 								update_dio( best, current_best_path_cost );
 					
-								//CHANGE THE RANK NODE ANYWAY AND ADVERTISE CHILDREN, HOW, FIRST_DIO????
-								//BUT WITH FIRST_DIO THE PARENT SET IS CLEARED! 
-								
-								
 								find_worst_parent();
 								//SEND DAO, Change the DaoSequenceNumber and PathSequence
 								//REMEMBER TO WRAP AROUND WHEN REACHING THE VALUE LIMIT
-								//FIRST SEND NO PATH DAO to the old preferred parent
 								
 								dao_ack_received_ = false;
 								dao_sequence_ = dao_sequence_ + 1;
@@ -1906,6 +1881,13 @@ namespace wiselib
 								//it is present, I already have the pointer 'it'
 								
 								it->second.path_cost = parent_path_cost;
+								//what if now the rank of this parent is worst than the current one!?
+								// if so, delete it from the parent set!
+
+
+								//DO IT!
+
+
 								find_worst_parent();
 								packet_pool_mgr_->clean_packet( message );
 								return;	
@@ -1913,7 +1895,7 @@ namespace wiselib
 						}
 						else
 						{
-							//Not significant update: same cost
+							//Not significant update: present in parent set and same path cost
 							packet_pool_mgr_->clean_packet( message );
 							return;	
 						}
@@ -1947,7 +1929,7 @@ namespace wiselib
 							if( best != preferred_parent_ )
 								send_no_path_dao( my_global_address_ );
 							
-
+							//this delete the parents whose rank is worst than the current one
 							update_dio( best, current_best_path_cost);
 							
 							//SEND DAO, Change the DaoSequenceNumber and PathSequence
@@ -2021,7 +2003,6 @@ namespace wiselib
 				target.set_address(addr);
 
 				//VERIFY FRESHNESS OF THE TARGET
-				//uint8_t freshness = data[48];
 				uint16_t seq_nr = (uint16_t)data[48];
 
 				ForwardingTableIterator it = radio_ip().routing_.forwarding_table_.find( target );
@@ -2095,7 +2076,7 @@ namespace wiselib
 				{
 					message->remote_ll_address = Radio_P::NULL_NODE_ID;
 					message->target_interface = NUMBER_OF_INTERFACES;
-					//now send this message to the preferred parent... or all the DAO parents?
+					//now send this message to the preferred parent... or to all the DAO parents?
 					message->set_source_address(my_address_);
 
 					send( preferred_parent_, packet_number, NULL );
