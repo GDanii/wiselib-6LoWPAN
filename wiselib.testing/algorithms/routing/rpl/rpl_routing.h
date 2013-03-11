@@ -1197,7 +1197,7 @@ namespace wiselib
 	timer_elapsed( void* userdata )
 	{
 		dio_count_ = 0;
-		if( !stop_timers_ )
+		if( !stop_timers_ && state_ != Leaf )
 		{
 		
 			if ( 2 * current_interval_ < max_interval_ )
@@ -1220,7 +1220,7 @@ namespace wiselib
 		}
 		
 		//Enter if a 'new version DIO' has been received (this happens when the timer of the new version expires before the old one)
-		else if ( version_last_time_ != version_number_ )
+		else if ( version_last_time_ != version_number_ && state_ != Leaf  )
 		{
 			if ( 2 * current_interval_ < max_interval_ )
 				set_current_interval(2); //double the interval
@@ -1274,7 +1274,7 @@ namespace wiselib
 	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
 	leaf_timer_elapsed( void* userdata )
 	{
-		if(state_ != Dodag_root && !dao_received_ )
+		if(state_ != Dodag_root && state_ != Router && !dao_received_ )
 		{
 			#ifdef ROUTING_RPL_DEBUG
 			char str[43];
@@ -1283,7 +1283,7 @@ namespace wiselib
 			
 			state_ = Leaf;
 		}
-		else if (state_ != Dodag_root )
+		else if (state_ != Dodag_root && state_ != Router )
 		{
 			#ifdef ROUTING_RPL_DEBUG
 			char str[43];
@@ -2048,6 +2048,18 @@ namespace wiselib
 							//if the parent is present delete it because the rank is higher than the current one
 							if( it != parent_set_.end() )
 								parent_set_.erase( sender );
+							
+						}
+						//if the state of the current node is Leaf change it to Router
+						//... the rank is relatively smaller that at least one neighbor, it might be a potential parent...
+						if( state_ == Leaf )
+						{
+							#ifdef ROUTING_RPL_DEBUG
+							debug().debug( "\nRPL Routing: Leaf with Good Rank, Change state to Router\n" );
+							#endif							
+							state_ = Router;
+							timer().template set_timer<self_type, &self_type::timer_elapsed>( current_interval_, this, 0 );
+							timer().template set_timer<self_type, &self_type::threshold_timer_elapsed>( sending_threshold_, this, 0 );
 						}
 						find_worst_parent();
 						
@@ -2132,9 +2144,6 @@ namespace wiselib
 				}
 				else
 				{
-					#ifdef ROUTING_RPL_DEBUG
-					debug().debug( "\nRPL Routing: Received NEW DAO\n" );
-					#endif
 					dao_received_ = true;
 					Forwarding_table_value entry( sender, 0, seq_nr, 0 );
 					radio_ip().routing_.forwarding_table_.insert( ft_pair_t( target, entry ) );
