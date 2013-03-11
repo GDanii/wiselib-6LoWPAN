@@ -143,6 +143,7 @@ namespace wiselib
 		//Parent Set is the set of the candidate neighbors of RFC 6719
 		struct Mapped_parent_set
 		{
+			uint16_t rank;
 			uint16_t path_cost;
 			uint8_t current_version;
 			uint8_t grounded;
@@ -346,6 +347,8 @@ namespace wiselib
 		void dis_delay( void *userdata );
 		
 		void threshold_timer_elapsed( void *userdata );
+
+		void leaf_timer_elapsed( void* userdata );
 	
 		void floating_timer_elapsed( void *userdata );
 
@@ -619,7 +622,8 @@ namespace wiselib
 
 		bool neighbors_found_;
 
-		//uint16_t best_path_cost_; //Initialize it
+		bool dao_received_;
+
 		uint16_t cur_min_path_cost_; //path cost of the current preferred parent (RFC 6719, sect. 3.2), to allow hysteresis
 						
 		//A global RPLInstanceID must be unique to the whole LLN!
@@ -684,6 +688,7 @@ namespace wiselib
 		dao_ack_received_ (false),
 		no_path_ack_received_ (false),
 		neighbors_found_ (false),
+		dao_received_ (false),
 		state_ (Unconnected),
 		dio_count_ (0),
 		bcast_neigh_count_ (0),
@@ -1267,6 +1272,37 @@ namespace wiselib
 		typename Clock_P>
 	void
 	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
+	leaf_timer_elapsed( void* userdata )
+	{
+		if(state_ != Dodag_root && !dao_received_ )
+		{
+			#ifdef ROUTING_RPL_DEBUG
+			char str[43];
+			debug().debug( "RPL Routing: Node %s: I'm a Leaf\n", my_address_.get_address(str) );
+			#endif
+			
+			state_ = Leaf;
+		}
+		else if (state_ != Dodag_root )
+		{
+			#ifdef ROUTING_RPL_DEBUG
+			char str[43];
+			debug().debug( "RPL Routing: Node %s: I'm a Router\n", my_address_.get_address(str) );
+			#endif
+			state_ = Router;
+		}
+	}
+
+	// -----------------------------------------------------------------------
+	
+	template<typename OsModel_P,
+		typename Radio_IP_P,
+		typename Radio_P,
+		typename Debug_P,
+		typename Timer_P,
+		typename Clock_P>
+	void
+	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
 	dao_timer_elapsed( void* userdata )
 	{
 		//this timer must be directly proportional to the rank when aggregation is not supported (rank_*100 + something??) 
@@ -1666,6 +1702,13 @@ namespace wiselib
 					packet_pool_mgr_->clean_packet( message );
 					return;
 				}
+
+				else if( check_rank > MAX_PATH_COST )
+				{
+					//if this is the only parent add it as preferred parent
+					//this node is a leaf! So stop dio timer
+				}
+				//
 				//Compare the received message with the stored one..
 				//if they are the same DIO then increase the counter, otherwise it may be a new version
 				//Here I can also process DIO messages without the configuration option...
@@ -1688,11 +1731,10 @@ namespace wiselib
 						packet_pool_mgr_->clean_packet( message );
 						return;				
 					}
-								
+						
 					//create a new message and restart the timer (RFC6550 pag.74)
 					//Should I clean the Forwarding Table????
-					//Don't call first dio! 
-					//(this is because there's the possibility to mantain the connectivity to an old topology version)
+					//RFC 6550 sect 8.2.2.1: Every element of a node's parent set MUST belong to the same version
 					//understand what are the rules that let the node to migrate to the new version
 					first_dio( sender, data, length );
 				}
@@ -1758,7 +1800,7 @@ namespace wiselib
 					map.current_version = data[5];
 					uint8_t grounded = data[8];
 					grounded = (grounded >> 7);
-					map.grounded = grounded;			
+					map.grounded = grounded;		
 										
 					dio_count_ = dio_count_ + 1;
 
@@ -1766,18 +1808,12 @@ namespace wiselib
 					//the node need to store the rank for each parent in the parent set
 
 					//TO COMPARE RANK OR PARENT PATH COST? REMEMBER, THEY ARE DIFFERENT!!!! (TO UNDESRTAND...)
-					if (parent_path_cost == rank_ )
+					if (parent_rank == rank_ )
 					{
-						//this may be a candidate parent, to add in the parent set anyway!!!!
-
-
-						//DO IT!
-			
-
 						packet_pool_mgr_->clean_packet( message );
 						return;	
 					}
-					if (parent_path_cost < rank_ )
+					if (parent_rank < rank_ )
 					{
 						if( ! scan_neighbor( sender ) )
 						{
@@ -1789,6 +1825,7 @@ namespace wiselib
 						ParentSet_iterator it = parent_set_.find(sender);
 						if (it == parent_set_.end())
 						{
+							map.rank = parent_rank;
 							map.path_cost = parent_path_cost;
 							//WHAT IF THE PARENT SET IS FULL?
 							if( parent_set_.size() == parent_set_.max_size() )
@@ -1813,9 +1850,23 @@ namespace wiselib
 							//change preferred parent only if this parent is at least 1.5-better
 							if( parent_path_cost < (cur_min_path_cost_ - PARENT_SWITCH_THRESHOLD) )
 							{	
+								send_no_path_dao( my_global_address_ );
 								//should I stop the timers??? NO JUST CHANGE THE VALUES IN DIO MESSAGE
 								update_dio( sender, parent_path_cost); 
+								
+								if( state_ == Leaf )
+								{
+									dao_received_ = false;
+									state_ = Connected;
+			
+									//Don't reset trickle timer, or maybe...
+									//set_current_interval(0);
+									//compute_sending_threshold();
+									timer().template set_timer<self_type, &self_type::leaf_timer_elapsed>(  current_interval_ + 2500, this, 0 );
+									timer().template set_timer<self_type, &self_type::timer_elapsed>( current_interval_, this, 0 );
+									timer().template set_timer<self_type, &self_type::threshold_timer_elapsed>( sending_threshold_, this, 0 );
 									
+								}
 								//SEND DAO, Change the DaoSequenceNumber, PathSequence
 								//REMEMBER TO WRAP AROUND WHEN REACHING THE VALUE LIMIT
 								//FIRST SEND NO PATH DAO to the old preferred parent
@@ -1840,6 +1891,7 @@ namespace wiselib
 						//...if so delete it if it is greater than the one of the current node
 						else if( it->second.path_cost != parent_path_cost ) 
 						{
+							it->second.rank = parent_rank;
 							it->second.path_cost = parent_path_cost;						
 
 							if ( sender == preferred_parent_ )
@@ -1862,7 +1914,20 @@ namespace wiselib
 								//FIRST SEND NO PATH DAO to the old preferred parent			
 								if ( best != sender )
 									send_no_path_dao( my_global_address_ );
-							
+								
+								if( state_ == Leaf )
+								{
+									dao_received_ = false;
+									state_ = Connected;
+			
+									//Don't reset trickle timer, or maybe...
+									//set_current_interval(0);
+									//compute_sending_threshold();
+									timer().template set_timer<self_type, &self_type::leaf_timer_elapsed>(  current_interval_ + 2500, this, 0 );
+									timer().template set_timer<self_type, &self_type::timer_elapsed>( current_interval_, this, 0 );
+									timer().template set_timer<self_type, &self_type::threshold_timer_elapsed>( sending_threshold_, this, 0 );
+									
+								}
 								update_dio( best, current_best_path_cost );
 					
 								find_worst_parent();
@@ -1881,15 +1946,45 @@ namespace wiselib
 							{
 								//if the parent is present update it because its rank has changed
 								//it is present, I already have the pointer 'it'
-								
+								it->second.rank = parent_rank;
 								it->second.path_cost = parent_path_cost;
-								//what if now the rank of this parent is worst than the current one!?
-								// if so, delete it from the parent set!
+								
+								if( parent_path_cost < (cur_min_path_cost_ - PARENT_SWITCH_THRESHOLD) )
+								{
+									//send no-dao to the old preferred_parent
+									send_no_path_dao( my_global_address_ );
+									//should I stop the timers??? NO JUST CHANGE THE VALUES IN DIO MESSAGE
+									update_dio( sender, parent_path_cost); 
+								
+									if( state_ == Leaf )
+									{
+										dao_received_ = false;
+										state_ = Connected;
+			
+										//Don't reset trickle timer, or maybe...
+										//set_current_interval(0);
+										//compute_sending_threshold();
+										timer().template set_timer<self_type, &self_type::leaf_timer_elapsed>(  current_interval_ + 2500, this, 0 );
+										timer().template set_timer<self_type, &self_type::timer_elapsed>( current_interval_, this, 0 );
+										timer().template set_timer<self_type, &self_type::threshold_timer_elapsed>( sending_threshold_, this, 0 );
+									
+									}
+									//SEND DAO, Change the DaoSequenceNumber, PathSequence
+									//REMEMBER TO WRAP AROUND WHEN REACHING THE VALUE LIMIT
+									//FIRST SEND NO PATH DAO to the old preferred parent
 
-
-								//DO IT!
-
-
+									dao_ack_received_ = false;					
+									dao_sequence_ = dao_sequence_ + 1;
+									dao_message_->template set_payload<uint8_t>( &dao_sequence_, 7, 1 );
+									path_sequence_ = path_sequence_ + 1;
+									dao_message_->template set_payload<uint8_t>( &path_sequence_, 48, 1 );
+									//DAO sent automatically thanks to the timer
+								}
+				
+								// if the rank of this parent is worst than the current one, delete it from the parent set!
+								else if ( parent_rank > rank_ )
+									parent_set_.erase( sender );
+								
 								find_worst_parent();
 								packet_pool_mgr_->clean_packet( message );
 								return;	
@@ -1905,12 +2000,13 @@ namespace wiselib
 
 					else
 					{	
-						//parent_path_cost > rank
-						
+						//parent_rank > rank
+						ParentSet_iterator it = parent_set_.find( sender );
 						if ( sender == preferred_parent_ ) //Here more complex
 						{	
-							ParentSet_iterator it_parent = parent_set_.find( sender );
-							it_parent->second.path_cost = parent_path_cost;
+							
+							it->second.rank = parent_rank;
+							it->second.path_cost = parent_path_cost;
 							//send no-path only if the preferred parent changes
 							
 							#ifdef ROUTING_RPL_DEBUG
@@ -1950,8 +2046,7 @@ namespace wiselib
 						else
 						{
 							//if the parent is present delete it because the rank is higher than the current one
-							ParentSet_iterator it_parent = parent_set_.find( sender );
-							if( it_parent != parent_set_.end() )
+							if( it != parent_set_.end() )
 								parent_set_.erase( sender );
 						}
 						find_worst_parent();
@@ -2032,10 +2127,15 @@ namespace wiselib
 					{
 						it->second.next_hop = sender;
 						it->second.seq_nr = seq_nr;
+						dao_received_ = true;
 					}
 				}
 				else
 				{
+					#ifdef ROUTING_RPL_DEBUG
+					debug().debug( "\nRPL Routing: Received NEW DAO\n" );
+					#endif
+					dao_received_ = true;
 					Forwarding_table_value entry( sender, 0, seq_nr, 0 );
 					radio_ip().routing_.forwarding_table_.insert( ft_pair_t( target, entry ) );
 				}
@@ -2243,6 +2343,7 @@ namespace wiselib
 		debug().debug( "\n\n\nRPL Routing: Node %s is starting the timers\n\n", my_address_.get_address(str) );
 		#endif
 		
+		timer().template set_timer<self_type, &self_type::leaf_timer_elapsed>( current_interval_ + 2500, this, 0 );
 
 		//timer after which I must to double the timer value (if I don't detect inconsistencies)
 		timer().template set_timer<self_type, &self_type::timer_elapsed>( current_interval_, this, 0 );
@@ -2559,6 +2660,7 @@ namespace wiselib
 				//rank_ = increase_rank( parent_rank, rank_increase_ );
 
 				cur_min_path_cost_ = rank_;
+				map.rank = parent_rank;
 				map.path_cost = cur_min_path_cost_;
 				map.metric_type = LINK_ETX;
 			
@@ -2572,6 +2674,7 @@ namespace wiselib
 				rank_increase_ = step_of_rank_ * min_hop_rank_increase_; 
 				cur_min_path_cost_ = parent_rank + rank_increase_;
 				rank_ = cur_min_path_cost_;
+				map.rank = parent_rank;
 				map.path_cost = cur_min_path_cost_;
 				map.metric_type = 0; //to verify the real metric type
 			}
@@ -3326,7 +3429,7 @@ namespace wiselib
 		//delete all the entry whose rank is higher than the rank of the current node
 		for (ParentSet_iterator it = parent_set_.begin(); it != parent_set_.end(); it++)
 		{
-			if ( it->second.path_cost > rank_ )
+			if ( it->second.rank > rank_ )
 			{
 				Mapped_erase_node map;
 				map.node = it->first;
