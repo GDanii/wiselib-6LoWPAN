@@ -54,6 +54,9 @@
 #define ALLOW_FLOATING_ROOT 0
 
 
+#define DODAG_REPAIR_THRESHOLD 30
+
+
 //These are not specified by IANA because the document is just a draft now
 //draft-ietf-6lowpan-nd-19
 #define TBD1 33 //Address registration option
@@ -612,8 +615,6 @@ namespace wiselib
 
 		bool etx_;
 
-		bool discovery_received_;
-
 		bool prefix_present_;
 
 		bool dao_ack_received_;
@@ -623,6 +624,8 @@ namespace wiselib
 		bool neighbors_found_;
 
 		bool dao_received_;
+
+		uint8_t dis_count_;
 
 		uint16_t cur_min_path_cost_; //path cost of the current preferred parent (RFC 6719, sect. 3.2), to allow hysteresis
 						
@@ -684,13 +687,13 @@ namespace wiselib
 	RPLRouting()
 		: rpl_instance_id_ (1),
 		etx_ (true),
-		discovery_received_ (false),
 		dao_ack_received_ (false),
 		no_path_ack_received_ (false),
 		neighbors_found_ (false),
 		dao_received_ (false),
 		state_ (Unconnected),
 		dio_count_ (0),
+		dis_count_ (0),
 		bcast_neigh_count_ (0),
 		dtsn_ (0),
 		dao_sequence_ (0),
@@ -887,8 +890,16 @@ namespace wiselib
 		setter_byte = DEST_ADVERT_OBJECT;
 		dao_message_->template set_payload<uint8_t>( &setter_byte, 1, 1 );
 		no_path_dao_->template set_payload<uint8_t>( &setter_byte, 1, 1 );
-			
-		timer().template set_timer<self_type, &self_type::start2>( 2000, this, 0 );
+		
+		stop_timers_ = false;
+		dao_ack_received_ = false;
+		no_path_ack_received_ = false;
+		neighbors_found_ = false;
+		dao_received_ = false;
+		dis_count_ = 0;
+	
+		
+		timer().template set_timer<self_type, &self_type::start2>( 1500, this, 0 );
 		
 		return SUCCESS;
 	}
@@ -921,7 +932,7 @@ namespace wiselib
 			neighbors_found_ = true;
 			return;
 		}
-									
+		
 		else if ( state_ == Dodag_root )
 		{		
 			version_number_ = 1;
@@ -1220,7 +1231,7 @@ namespace wiselib
 		}
 		
 		//Enter if a 'new version DIO' has been received (this happens when the timer of the new version expires before the old one)
-		else if ( version_last_time_ != version_number_ && state_ != Leaf  )
+		else if ( version_last_time_ != version_number_ && state_ != Leaf && state_ != Dodag_root )
 		{
 			if ( 2 * current_interval_ < max_interval_ )
 				set_current_interval(2); //double the interval
@@ -2069,6 +2080,22 @@ namespace wiselib
 		}
 		else if( typecode == DODAG_INF_SOLICIT )
 		{
+			if( state_ == Dodag_root )
+			{
+				dis_count_ = dis_count_ + 1;
+				if( dis_count_ > DODAG_REPAIR_THRESHOLD )
+				{
+					#ifdef ROUTING_RPL_DEBUG
+					debug().debug( "\nRPL Routing: GLOBAL REPAIR\n" );
+					#endif
+					//GLOBAL REPAIR
+
+					stop_timers_ = true;
+					version_number_ = version_number_ + 1;
+						
+					start();
+				}
+			}
 			packet_pool_mgr_->clean_packet( message );
 			if( state_ == Unconnected )
 				return;
@@ -2294,7 +2321,16 @@ namespace wiselib
 
 		stop_timers_ = true;
 		radio_ip().routing_.forwarding_table_.clear();
-				
+		
+		dao_ack_received_ = false;
+		no_path_ack_received_ = false;
+		//neighbors_found_ = false;
+		dao_received_ = false;
+
+		preferred_parent_ = Radio_IP::NULL_NODE_ID;
+		old_preferred_parent_ = Radio_IP::NULL_NODE_ID;
+		worst_parent_ = Radio_IP::NULL_NODE_ID;
+
 		//Now, since the CONFIGURATION_OPTION and PREFIX INFORMATION ARE PRESENT I CAN START SCANNING ALL THE OPTIONS		
 		//TO DO!!!!!!!	if else ( RIO )
 
@@ -3513,7 +3549,36 @@ namespace wiselib
 						#ifdef ROUTING_RPL_DEBUG
 						debug().debug( "\nRPL Routing: FINAL DESTINATION, 2nd Inconsistency ==> DROP\n" );
 						#endif
-						//second inconsistency, DODAG REPAIR management, TO DO!
+						
+						//In all cases detach from the dodag, advertise INFINITE RANK
+
+						if( state_ != Dodag_root )
+						{
+							//Local Repair
+							send_no_path_dao( my_global_address_ );
+
+							rank_ = INFINITE_RANK;
+		
+							stop_timers_ = true;
+	
+							//This message may be lost in the network
+							send_dio( Radio_IP::BROADCAST_ADDRESS, dio_reference_number_, NULL );
+
+							//Is this necessary? This node will eventually receives DIOs from Neighbors without sending any solicitation! 	
+							send_dis( Radio_IP::BROADCAST_ADDRESS, dis_reference_number_, NULL );
+		
+						}
+						else{
+							#ifdef ROUTING_RPL_DEBUG
+							debug().debug( "\nRPL Routing: GLOBAL REPAIR\n" );
+							#endif
+							//GLOBAL REPAIR
+
+							stop_timers_ = true;
+							version_number_ = version_number_ + 1;
+						
+							start();
+						}
 						
 						//DON'T DROP IT, This is the destination... but anyway advertise nodes!
 						return Radio_IP::DROP_PACKET;
@@ -3529,7 +3594,11 @@ namespace wiselib
 						else
 							flags = 64;
 						data_pointer[2] = flags;
+
 					}
+
+					//Global repair triggered by the root when receiving a huge amount of dis 
+					send_dis( dodag_id_, dis_reference_number_, NULL );
 					
 				}
 				
@@ -3744,8 +3813,35 @@ namespace wiselib
 							#endif
 							//second inconsistency, DODAG REPAIR management, TO DO!
 
+							//In all cases detach from the dodag, advertise INFINITE RANK
 
+							if( state_ != Dodag_root )
+							{
+								//Local Repair
+								send_no_path_dao( my_global_address_ );
 
+								rank_ = INFINITE_RANK;
+		
+								stop_timers_ = true;
+	
+								//This message may be lost in the network
+								send_dio( Radio_IP::BROADCAST_ADDRESS, dio_reference_number_, NULL );
+
+								//Is this necessary? This node will eventually receives DIOs from Neighbors without sending any solicitation! 	
+								send_dis( Radio_IP::BROADCAST_ADDRESS, dis_reference_number_, NULL );
+		
+							}
+							else{
+								#ifdef ROUTING_RPL_DEBUG
+								debug().debug( "\nRPL Routing: GLOBAL REPAIR\n" );
+								#endif
+								//GLOBAL REPAIR
+								version_number_ = version_number_ + 1;
+						
+								stop_timers_ = true;
+		
+								start();
+							}
 								//REMEMBER!!!!!!!!!!
 							
 							//DROP THE PACKET
@@ -3762,14 +3858,12 @@ namespace wiselib
 							else
 								flags = 64;
 							data_pointer[2] = flags;
-							//SET NEW RANK
-							//data_pointer[4] = (uint8_t) (rank_ >> 8 );
-							//data_pointer[5] = (uint8_t) (rank_ );
-							//return Radio_IP::CORRECT;
-
+						
 							//THINK WHAT IS THE CORRECT BEHAVIOR HERE
 						}
-						
+
+						//Global repair triggered by the root when receiving a huge amount of dis 
+						send_dis( dodag_id_, dis_reference_number_, NULL );
 					}
 					
 					if( it != radio_ip().routing_.forwarding_table_.end() )
@@ -3839,6 +3933,8 @@ namespace wiselib
 							
 							}
 						}
+						data_pointer[4] = (uint8_t) (rank_ >> 8 );
+						data_pointer[5] = (uint8_t) (rank_ );
 						radio_ip().routing_.print_forwarding_table();
 						return Radio_IP::CORRECT;
 					}
