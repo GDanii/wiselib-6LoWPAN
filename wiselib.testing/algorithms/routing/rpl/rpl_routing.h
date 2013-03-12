@@ -407,6 +407,12 @@ namespace wiselib
 
 		int handle_TLV( uint8_t packet_number, uint8_t* data_pointer, bool only_usage );
 
+		void print_parent_set();
+		
+		void print_neighbor_set();
+
+		void print_neighbors();		
+	
 		time_t time()
 		{
 			return clock().time();
@@ -1913,7 +1919,7 @@ namespace wiselib
 								node_id_t best = Radio_IP::NULL_NODE_ID;
 								uint16_t current_best_path_cost = 0xFFFF;
 		
-								for (ParentSet_iterator it = parent_set_.begin(); it != parent_set_.end(); it++)
+								for( ParentSet_iterator it = parent_set_.begin(); it != parent_set_.end(); it++ )
 								{
 									if ( it->second.path_cost < current_best_path_cost )
 									{
@@ -3685,6 +3691,9 @@ namespace wiselib
 					data_pointer[2] = 0;
 					
 				}
+				print_neighbors();
+				print_neighbor_set();
+				print_parent_set();
 				radio_ip().routing_.print_forwarding_table();
 				return Radio_IP::CORRECT;
 			}
@@ -3746,6 +3755,9 @@ namespace wiselib
 							//SET DOWN BIT = 1, RANK ERROR = 0 (first hop), Forwarding error = 0 : 2^7 = 128
 							data_pointer[2] = 128;
 						}
+						print_neighbors();
+						print_neighbor_set();
+						print_parent_set();
 						radio_ip().routing_.print_forwarding_table();
 						return Radio_IP::CORRECT;
 					}
@@ -3792,7 +3804,10 @@ namespace wiselib
 						
 								data_pointer[2] = 0;
 								
-							}	
+							}
+							print_neighbors();
+							print_neighbor_set();
+							print_parent_set();
 							radio_ip().routing_.print_forwarding_table();
 							return Radio_IP::CORRECT;	
 						}
@@ -3935,6 +3950,9 @@ namespace wiselib
 						}
 						data_pointer[4] = (uint8_t) (rank_ >> 8 );
 						data_pointer[5] = (uint8_t) (rank_ );
+						print_neighbors();
+						print_neighbor_set();
+						print_parent_set();
 						radio_ip().routing_.print_forwarding_table();
 						return Radio_IP::CORRECT;
 					}
@@ -3977,6 +3995,9 @@ namespace wiselib
 						
 						data_pointer[4] = (uint8_t) (rank_ >> 8 );
 						data_pointer[5] = (uint8_t) (rank_ );
+						print_neighbors();
+						print_neighbor_set();
+						print_parent_set();
 						radio_ip().routing_.print_forwarding_table();
 						return Radio_IP::CORRECT;
 					}
@@ -4001,6 +4022,87 @@ namespace wiselib
 			return false;
 		else
 			return true;
+	}
+
+	// -----------------------------------------------------------------------
+	template<typename OsModel_P,
+		typename Radio_IP_P,
+		typename Radio_P,
+		typename Debug_P,
+		typename Timer_P,
+		typename Clock_P>
+	void
+	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
+	print_parent_set()
+	{
+		char str[43];
+		#ifdef ROUTING_RPL_DEBUG
+		debug().debug( "\nRPL Routing: Node %s, Parent Set with relative path cost: \n", my_address_.get_address(str));
+		#endif
+		int i = 0;
+		for( ParentSet_iterator it = parent_set_.begin(); it != parent_set_.end(); it++ )
+		{
+			char str2[43];
+			#ifdef ROUTING_RPL_DEBUG
+			debug().debug( "\n %i: %s, %i ", i, it->first.get_address(str2),  it->second.path_cost );
+			#endif
+			i = i + 1;
+		}
+		debug().debug( "\n\n" );
+	}
+
+	// -----------------------------------------------------------------------
+	template<typename OsModel_P,
+		typename Radio_IP_P,
+		typename Radio_P,
+		typename Debug_P,
+		typename Timer_P,
+		typename Clock_P>
+	void
+	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
+	print_neighbor_set()
+	{
+		char str[43];
+		#ifdef ROUTING_RPL_DEBUG
+		debug().debug( "\nRPL Routing: Node %s, Neighbor Set: \n", my_address_.get_address(str));
+		#endif
+		int i = 0;
+		for( NeighborSet_iterator it = neighbor_set_.begin(); it != neighbor_set_.end(); it++ )
+		{
+			char str2[43];
+			#ifdef ROUTING_RPL_DEBUG
+			debug().debug( "\n %i: %s ", i, it->first.get_address(str2));
+			#endif
+			i = i + 1;
+		}
+		debug().debug( "\n\n" );
+	}
+
+	// -----------------------------------------------------------------------
+	template<typename OsModel_P,
+		typename Radio_IP_P,
+		typename Radio_P,
+		typename Debug_P,
+		typename Timer_P,
+		typename Clock_P>
+	void
+	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
+	print_neighbors()
+	{
+		char str[43];
+		#ifdef ROUTING_RPL_DEBUG
+		debug().debug( "\nRPL Routing: Node %s, Neighbors found through ND: \n", my_address_.get_address(str));
+		#endif
+		int i = 0;
+		for( Neighbors_iterator it = neighbors_.begin(); it != neighbors_.end(); it++ )
+		{
+			char str2[43];
+			#ifdef ROUTING_RPL_DEBUG
+			debug().debug( "\n %i: %s ", i, it->first.get_address(str2));
+			#endif
+			i = i + 1;
+		}
+		debug().debug( "\n\n" );
 	}
 
 }
