@@ -143,6 +143,10 @@ namespace wiselib
 		typedef wiselib::pair<node_id_t, Mapped_neighbor_set> neigh_pair_t;
 		typedef typename wiselib::MapStaticVector<OsModel , node_id_t, Mapped_neighbor_set, 20>::iterator NeighborSet_iterator;
 
+		typedef MapStaticVector<OsModel, node_id_t, uint8_t, 20> NeighborTempETX; 
+		typedef wiselib::pair<node_id_t, uint8_t> temp_pair_t;
+		typedef typename wiselib::MapStaticVector<OsModel , node_id_t, uint8_t, 20>::iterator NeighborTempETX_iterator;
+
 		//Parent Set is the set of the candidate neighbors of RFC 6719
 		struct Mapped_parent_set
 		{
@@ -573,10 +577,12 @@ namespace wiselib
 
 		NeighborSet neighbor_set_;
 
+		NeighborTempETX neighbor_temp_ETX_;
+
 		Erase_parent_list erase_parent_list_;
 
 		ParentSet parent_set_;
-	
+
 		//Non-Storing Mode
 		//TransitTable transit_table_; // not used if MOP = 0 | 1
 
@@ -905,7 +911,7 @@ namespace wiselib
 		dis_count_ = 0;
 	
 		
-		timer().template set_timer<self_type, &self_type::start2>( 1500, this, 0 );
+		timer().template set_timer<self_type, &self_type::start2>( 1000, this, 0 );
 		
 		return SUCCESS;
 	}
@@ -932,14 +938,51 @@ namespace wiselib
 		if( !neighbors_found_ )
 		{
 			//set timer in order for nodes to wait the protocol to compute ETX values
-			for( Neighbors_iterator it = neighbors_.begin(); it != neighbors_.end(); it++) 
+			for( Neighbors_iterator it = neighbors_.begin(); it != neighbors_.end(); it++)
+			{
+				Mapped_neighbor_set map;
+				map.bidirectionality = false;
+				map.etx_received = false;
+				map.etx_forward = 255;
+				map.etx_reverse = 255;
+				neighbor_set_.insert( neigh_pair_t( it->first, map ) );
+				neighbor_temp_ETX_.insert( temp_pair_t( it->first, 0 ) );
 				trigger_ETX_computation( it->first.addr );
-			timer().template set_timer<self_type, &self_type::start2>( 4000, this, 0 );
+			}
+			timer().template set_timer<self_type, &self_type::start2>( 8000, this, 0 );
 			neighbors_found_ = true;
 			return;
 		}
+		else
+		{
+			erase_list_.clear();
+			//delete 255-entries
+			for( NeighborSet_iterator it = neighbor_set_.begin(); it != neighbor_set_.end(); it++)
+			{
+				if( it->second.etx_forward == 255 || it->second.etx_reverse == 255 )
+				{
+					Mapped_erase_node map;
+					map.node = it->first;
+					erase_list_.push_back( map );
+				}
+				else
+				{
+					#ifdef ROUTING_RPL_DEBUG
+					char str[43];
+					debug().debug( "\n\n\nRPL Routing: NEIGH ENTRY %s: forward %i, reverse %i\n\n", it->first.get_address(str), it->second.etx_forward, it->second.etx_reverse );
+					#endif
+
+				}	
+			}
+
+			for( Erase_list_iterator it_er = erase_list_.begin(); it_er != erase_list_.end(); it_er++) 
+			{
+				neighbor_set_.erase( it_er->node );
+			}
+
+		}
 		
-		else if ( state_ == Dodag_root )
+		if ( state_ == Dodag_root )
 		{		
 			version_number_ = 1;
 			imin_ = 2 << (dio_int_min_ - 1);
@@ -1466,7 +1509,7 @@ namespace wiselib
 		NeighborSet_iterator it = neighbor_set_.find( neigh );
 		
 		//....
-		if( ! it->second.etx_received )
+		if( ! it->second.bidirectionality )
 		{
 			#ifdef ROUTING_RPL_DEBUG
 			//char str3[43];
@@ -1571,37 +1614,32 @@ namespace wiselib
 				#endif
 				
 				//No need timer, the sender will send a message again if it doesn't receive my response
-				uint8_t forward = 255;
-				uint8_t reverse = 1;
-				
-				Mapped_neighbor_set map;
-								
+												
 				NeighborSet_iterator it = neighbor_set_.find( sender );
-				if( it != neighbor_set_.end() )				
+				if( it == neighbor_set_.end() )				
 				{	
-					forward = it->second.etx_forward;
-					if( ! it->second.etx_received )
-						reverse = data[5];
-					else
-						reverse = it->second.etx_reverse;
-					map.etx_received = true;
+					//It must not happen... or maybe...   //remember
 				}
 			
-				map.bidirectionality = it->second.bidirectionality; //it is always not verified? NO!!!
-				neighbor_set_.erase( sender );
-				
-				map.etx_forward = forward;
-				map.etx_reverse = reverse;				
-		
-				neighbor_set_.insert ( neigh_pair_t( sender, map ) );
-				
+				if( !it->second.etx_received )
+				{
+					
+					it->second.etx_reverse = data[5];
+					it->second.etx_received = true;
+				}
+				else
+				{
+					//ETX alredy received, send back the packet with the old forward value for the sender
+				}
+										
 				message->set_source_address(my_address_);
 						
 				uint8_t setter_byte = 3;
 				message->template set_payload<uint8_t>( &setter_byte, 4, 1 );
 				
 				//In this way I ack the 'forward value' of node 'sender' toward me: My reverse is the forward for the sender
-				message->template set_payload<uint8_t>( &reverse, 5, 1 );
+				setter_byte = it->second.etx_reverse;
+				message->template set_payload<uint8_t>( &setter_byte, 5, 1 );
 				send( sender, packet_number, NULL );
 			}
 			else if( neigh_msg_type == 3 )
@@ -1611,31 +1649,25 @@ namespace wiselib
 				#ifdef ROUTING_RPL_DEBUG
 				debug().debug( "\nRPL Routing: I'm %s, Node %s confirm my forward \n", my_address_.get_address(str), sender.get_address(str2) );
 				#endif
-				uint8_t forward = 1;
-				uint8_t reverse = 1;
-				
+								
 				NeighborSet_iterator it = neighbor_set_.find( sender );
-				if( it != neighbor_set_.end() )
+				if( it == neighbor_set_.end() )
 				{
-					//the else is not possible since the entry is added before sending neigh_message_type = 2
-					forward = data[5]; //confirmation of my forward
-					reverse = it->second.etx_reverse;
+					//It must not happen... or maybe...   //remember
 				}
 				
-				Mapped_neighbor_set map;
-				//If I receive this message it means that the neighbor has received my request message
-				map.bidirectionality = true; 
-				map.etx_received = true;
-				map.etx_forward = forward;
-				map.etx_reverse = reverse;
-				
-				neighbor_set_.erase( sender );
-				neighbor_set_.insert( neigh_pair_t( sender, map ) );
-
-				#ifdef ROUTING_RPL_DEBUG
-				it = neighbor_set_.find( sender );	
-				debug().debug( "\n\n\nRPL Routing: NEIGH ENTRY: forward %i, reverse %i\n\n", it->second.etx_forward, it->second.etx_reverse );
-				#endif
+				if( !it->second.bidirectionality )
+				{
+					
+					it->second.etx_forward = data[5];
+					it->second.bidirectionality = true;	
+				}
+				else
+				{
+					//My ETX forward alredy acked
+					packet_pool_mgr_->clean_packet( message );
+					return;
+				}
 
 				packet_pool_mgr_->clean_packet( message );
 			
@@ -2978,85 +3010,65 @@ namespace wiselib
 	trigger_ETX_computation( uint8_t *addr )
 	{
 		//Currently ETX computed only once
-		uint8_t forward = 1;
-		uint8_t reverse = 255;
-		
 		node_id_t node;
 		uint8_t node_addr[16];
 		memcpy( node_addr, addr, 16 );
 		node.set_address( node_addr );
 
-		Mapped_neighbor_set map;
-		
-		NeighborSet_iterator it = neighbor_set_.find( node );
-				
-		if( it != neighbor_set_.end() )		
+		NeighborTempETX_iterator it = neighbor_temp_ETX_.find( node );
+
+		if( it != neighbor_temp_ETX_.end() )
 		{
-			//if the number of tentative are over a certain threshold value the neighbor is considered not reachable anymore
-			if( it->second.etx_forward > 3 )   //to change according to the reliability of the network
+			it->second = it->second + 1;
+			if( it->second > 5 )   //to change according to the reliability of the network
 			{
-				//uint8_t ret = delete_neighbor( node );
-				//if ( delete_neighbor( node ) == 1 )
-				//	return; //1 means no parents anymore!
-				neighbor_set_.erase( node );
+				neighbor_temp_ETX_.erase( node );
 				return;
-			}
-			
-			it->second.etx_forward = it->second.etx_forward + 1;
+			}	
+			else
+			{
+				uint8_t num = packet_pool_mgr_->get_unused_packet_with_number();
+				IPv6Packet_t* message = packet_pool_mgr_->get_packet_pointer( num );
+		
+				if( num == Packet_Pool_Mgr_t::NO_FREE_PACKET )
+					return;			
 
-			forward = it->second.etx_forward;
-			reverse = it->second.etx_reverse;
-			map.bidirectionality = it->second.bidirectionality;
-			map.etx_received = it->second.etx_received;
-			neighbor_set_.erase( node );
-			
-		}
-			
-		map.etx_forward = forward;
-		map.etx_reverse = reverse;
+				uint8_t setter_byte = RPL_CONTROL_MESSAGE;
+				message->template set_payload<uint8_t>( &setter_byte, 0, 1 ); 
+		
+				setter_byte = OTHERWISE;
+				message->template set_payload<uint8_t>( &setter_byte, 1, 1 );
 
-		neighbor_set_.insert( neigh_pair_t ( node, map ) );
-
-		#ifdef ROUTING_RPL_DEBUG
-		char str[43];
-		char str2[43];
-		//debug().debug( "\nRPLRouting: Node: %s is computing ETX for parent %s \n", my_address_.get_address(str), parent.get_address( str2 ));
-		#endif
-		uint8_t num = packet_pool_mgr_->get_unused_packet_with_number();
-		IPv6Packet_t* message = packet_pool_mgr_->get_packet_pointer( num );
+				setter_byte = 2; //1 for 1st BROADCAST, 2 For ETX computation, 3 for ETX computation response
+				message->template set_payload<uint8_t>( &setter_byte, 4, 1 );
 		
-		if( num == Packet_Pool_Mgr_t::NO_FREE_PACKET )
-			return;			
-
-		uint8_t setter_byte = RPL_CONTROL_MESSAGE;
-		message->template set_payload<uint8_t>( &setter_byte, 0, 1 ); 
+				//temporary forward value
+				setter_byte = it->second;
+				message->template set_payload<uint8_t>( &setter_byte, 5, 1 );
 		
-		setter_byte = OTHERWISE;
-		message->template set_payload<uint8_t>( &setter_byte, 1, 1 );
-
-		setter_byte = 2; //1 for 1st BROADCAST, 2 For ETX computation, 3 for ETX computation response
-		message->template set_payload<uint8_t>( &setter_byte, 4, 1 );
+				//don't need this
+				setter_byte = 0;
+				message->template set_payload<uint8_t>( &setter_byte, 6, 1 );
 		
-		message->template set_payload<uint8_t>( &forward, 5, 1 );
+				message->set_transport_length( 7 ); 
 		
-		//don't need this
-		setter_byte = 0;
-		message->template set_payload<uint8_t>( &setter_byte, 6, 1 );
-		
-		message->set_transport_length( 7 ); 
-		
-		message->set_transport_next_header( Radio_IP::ICMPV6 );
-		message->set_hop_limit(255);
+				message->set_transport_next_header( Radio_IP::ICMPV6 );
+				message->set_hop_limit(255);
 				
-		message->set_source_address(my_address_);
+				message->set_source_address(my_address_);
 
-		message->set_flow_label(0);
-		message->set_traffic_class(0);
+				message->set_flow_label(0);
+				message->set_traffic_class(0);
 
-		send( node, num, NULL );
+				send( node, num, NULL );
 
-		//the timer must be greater than the RTT
-		timer().template set_timer<self_type, &self_type::ETX_timer_elapsed>( 1500, this, addr );
+				//the timer must be greater than the RTT
+				timer().template set_timer<self_type, &self_type::ETX_timer_elapsed>( 1500, this, addr );
+				
+			}
+		}
+		else
+			return;
 	}
 
 	// -----------------------------------------------------------------------
@@ -3108,7 +3120,7 @@ namespace wiselib
 
 	
 	// -----------------------------------------------------------------------
-	
+	/*
 	template<typename OsModel_P,
 		typename Radio_IP_P,
 		typename Radio_P,
@@ -3196,18 +3208,13 @@ namespace wiselib
 					path_sequence_ = path_sequence_ + 1;
 					dao_message_->template set_payload<uint8_t>( &path_sequence_, 48, 1 );
 				}
-				//dao sent automatically thanks to the timer				
-				/*				
-				if( mop_ == 1 )
-					send_dao( dodag_id_, dao_reference_number_, NULL );
-				else if( mop_ == 2 )
-					send_dao( preferred_parent_, dao_reference_number_, NULL );
-				*/
+				
 				return 0;
 			}
 		}
 		return 0;
 	}
+	*/
 	// -----------------------------------------------------------------------
 	
 	template<typename OsModel_P,
