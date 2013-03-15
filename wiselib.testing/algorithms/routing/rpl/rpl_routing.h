@@ -1909,9 +1909,11 @@ namespace wiselib
 							//and delete parents whose rank is higher now!
 																					
 							//change preferred parent only if this parent is at least 1.5-better
+								
 							if( parent_path_cost < (cur_min_path_cost_ - PARENT_SWITCH_THRESHOLD) )
 							{	
-								send_no_path_dao( my_global_address_ );
+								if( preferred_parent_ != Radio_IP::NULL_NODE_ID )
+									send_no_path_dao( my_global_address_ );
 								//should I stop the timers??? NO JUST CHANGE THE VALUES IN DIO MESSAGE
 								update_dio( sender, parent_path_cost); 
 								
@@ -1931,6 +1933,9 @@ namespace wiselib
 								//SEND DAO, Change the DaoSequenceNumber, PathSequence
 								//REMEMBER TO WRAP AROUND WHEN REACHING THE VALUE LIMIT
 								//FIRST SEND NO PATH DAO to the old preferred parent
+
+								if( stop_timers_ )
+									stop_timers_ = false;
 
 								dao_ack_received_ = false;					
 								dao_sequence_ = dao_sequence_ + 1;
@@ -3508,6 +3513,12 @@ namespace wiselib
 		{
 			parent_set_.erase( it_er->node );
 		}
+
+
+
+		//reset timers!
+		set_current_interval(0);
+		compute_sending_threshold();
 		
 	}
 
@@ -3583,6 +3594,8 @@ namespace wiselib
 							send_no_path_dao( my_global_address_ );
 
 							rank_ = INFINITE_RANK;
+
+							//update the field in the DIO message!
 		
 							stop_timers_ = true;
 	
@@ -3701,8 +3714,58 @@ namespace wiselib
 						return  Radio_IP::DROP_PACKET;
 					}
 										
+					//CHECK REACHABILITY OF PREFERRED PARENT THROUGH NEIGHBOR DISCOVERY ENTRIES
+					//It makes no sense to send a no-path DAO since the receiver should be the sleeping node 
+					if( !is_still_neighbor( preferred_parent_ ) )
+					{
+						//find a new preferred parent...
+
+						parent_set_.erase( preferred_parent_ );
+						neighbor_set_.erase( preferred_parent_ );
+
+						#ifdef ROUTING_RPL_DEBUG
+						debug().debug( "\nRPLRouting: FINDING NEW PREFERRED PARENT\n" );
+						#endif
+						node_id_t best = Radio_IP::NULL_NODE_ID;
+						uint16_t current_best_path_cost = 0xFFFF;
+		
+						for (ParentSet_iterator it = parent_set_.begin(); it != parent_set_.end(); it++)
+						{
+							if ( it->second.path_cost < current_best_path_cost )
+							{
+								current_best_path_cost = it->second.path_cost;
+								best = it->first;
+							}
+						}
+								
+						if( best == Radio_IP::NULL_NODE_ID )
+						{
+							preferred_parent_ = Radio_IP::NULL_NODE_ID;
+							cur_min_path_cost_ = 0xFFFF;
+							//Node has no parents! Poison the sub-DODAG
+							rank_ = INFINITE_RANK;
+
+							stop_timers_ = true;
+	
+							//UPDATE THE RANK FIELD IN THE DIO message
+
+							dio_message_->template set_payload<uint16_t>( &rank_, 6, 1 );
+
+							//This message may be lost in the network
+							send_dio( Radio_IP::BROADCAST_ADDRESS, dio_reference_number_, NULL );
+						}
+						else
+						{
+							
+							//this delete the parents whose rank is worst than the current one
+							update_dio( best, current_best_path_cost);
+						}
+
+
+						return Radio_IP::DROP_PACKET;
+					}
+			
 					#ifdef ROUTING_RPL_DEBUG
-												
 					debug().debug( "\nRPL Routing: Source %s. Forwarding message to default route %s for destination %s \n", my_global_address_.get_address(str3), preferred_parent_.get_address(str), destination.get_address(str2));
 					#endif
 					//SET DOWN BIT = 0, RANK ERROR = 0 (first hop), Forwarding error = 0
@@ -3824,6 +3887,59 @@ namespace wiselib
 								data_pointer[2] = 0;
 								
 							}
+
+							//CHECK REACHABILITY OF PREFERRED PARENT THROUGH NEIGHBOR DISCOVERY ENTRIES
+							//It makes no sense to send a no-path DAO since the receiver should be the sleeping node 
+							if( !is_still_neighbor( preferred_parent_ ) )
+							{
+								//find a new preferred parent...
+
+								parent_set_.erase( preferred_parent_ );
+								neighbor_set_.erase( preferred_parent_ );
+
+								#ifdef ROUTING_RPL_DEBUG
+								debug().debug( "\nRPLRouting: FINDING NEW PREFERRED PARENT\n" );
+								#endif
+								node_id_t best = Radio_IP::NULL_NODE_ID;
+								uint16_t current_best_path_cost = 0xFFFF;
+		
+								for (ParentSet_iterator it = parent_set_.begin(); it != parent_set_.end(); it++)
+								{
+									if ( it->second.path_cost < current_best_path_cost )
+									{
+										current_best_path_cost = it->second.path_cost;
+										best = it->first;
+									}
+								}
+								
+								if( best == Radio_IP::NULL_NODE_ID )
+								{
+									preferred_parent_ = Radio_IP::NULL_NODE_ID;
+									cur_min_path_cost_ = 0xFFFF;
+									//Node has no parents! Poison the sub-DODAG
+									rank_ = INFINITE_RANK;
+
+									stop_timers_ = true;
+	
+									//UPDATE THE RANK FIELD IN THE DIO message
+
+									dio_message_->template set_payload<uint16_t>( &rank_, 6, 1 );
+
+									//This message may be lost in the network
+									send_dio( Radio_IP::BROADCAST_ADDRESS, dio_reference_number_, NULL );
+								}
+								else
+								{
+							
+									//this delete the parents whose rank is worst than the current one
+									update_dio( best, current_best_path_cost);
+								}
+
+
+								return Radio_IP::DROP_PACKET;
+							}
+
+
 							print_neighbors();
 							print_neighbor_set();
 							print_parent_set();
@@ -4010,7 +4126,57 @@ namespace wiselib
 							debug().debug( "\nRPL Routing: Node %s INTERMEDIATE NODE, going up again again. Forward packet to default route %s for destination %s, \n", my_global_address_.get_address(str3), preferred_parent_.get_address(str2), destination.get_address(str));
 							#endif
 						}
+						
+
+						//CHECK REACHABILITY OF PREFERRED PARENT THROUGH NEIGHBOR DISCOVERY ENTRIES
+						//It makes no sense to send a no-path DAO since the receiver should be the sleeping node 
+						if( !is_still_neighbor( preferred_parent_ ) )
+						{
+							//find a new preferred parent...
+
+							parent_set_.erase( preferred_parent_ );
+							neighbor_set_.erase( preferred_parent_ );
+
+							#ifdef ROUTING_RPL_DEBUG
+							debug().debug( "\nRPLRouting: FINDING NEW PREFERRED PARENT\n" );
+							#endif
+							node_id_t best = Radio_IP::NULL_NODE_ID;
+							uint16_t current_best_path_cost = 0xFFFF;
+		
+							for (ParentSet_iterator it = parent_set_.begin(); it != parent_set_.end(); it++)
+							{
+								if ( it->second.path_cost < current_best_path_cost )
+								{
+									current_best_path_cost = it->second.path_cost;
+									best = it->first;
+								}
+							}
+								
+							if( best == Radio_IP::NULL_NODE_ID )
+							{
+								preferred_parent_ = Radio_IP::NULL_NODE_ID;
+								cur_min_path_cost_ = 0xFFFF;
+								//Node has no parents! Poison the sub-DODAG
+								rank_ = INFINITE_RANK;
+
+								stop_timers_ = true;
+	
+								//UPDATE THE RANK FIELD IN THE DIO message
+
+								dio_message_->template set_payload<uint16_t>( &rank_, 6, 1 );
+
+								//This message may be lost in the network
+								send_dio( Radio_IP::BROADCAST_ADDRESS, dio_reference_number_, NULL );
+							}
+							else
+							{
 							
+								//this delete the parents whose rank is worst than the current one
+								update_dio( best, current_best_path_cost);
+							}
+
+							return Radio_IP::DROP_PACKET;
+						}
 						
 						data_pointer[4] = (uint8_t) (rank_ >> 8 );
 						data_pointer[5] = (uint8_t) (rank_ );
