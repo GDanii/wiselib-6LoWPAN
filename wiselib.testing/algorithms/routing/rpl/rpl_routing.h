@@ -911,7 +911,7 @@ namespace wiselib
 		dis_count_ = 0;
 	
 		
-		timer().template set_timer<self_type, &self_type::start2>( 1000, this, 0 );
+		timer().template set_timer<self_type, &self_type::start2>( 4000, this, 0 );
 		
 		return SUCCESS;
 	}
@@ -949,7 +949,7 @@ namespace wiselib
 				neighbor_temp_ETX_.insert( temp_pair_t( it->first, 0 ) );
 				trigger_ETX_computation( it->first.addr );
 			}
-			timer().template set_timer<self_type, &self_type::start2>( 8000, this, 0 );
+			timer().template set_timer<self_type, &self_type::start2>( 10000, this, 0 );
 			neighbors_found_ = true;
 			return;
 		}
@@ -1046,7 +1046,7 @@ namespace wiselib
 			dis_message_->template set_payload<uint8_t>( &setter_byte, 4, 1 );
 			dis_message_->template set_payload<uint8_t>( &setter_byte, 5, 1 );
 			dis_message_->set_transport_length( 6 );
-			timer().template set_timer<self_type, &self_type::dis_delay>( 6000, this, 0 );	
+			timer().template set_timer<self_type, &self_type::dis_delay>( 10000, this, 0 );	
 			#ifdef ROUTING_RPL_DEBUG
 			char str[43];
 			debug().debug( "RPLRouting: %s Start as ordinary node\n", my_address_.get_address(str) );
@@ -1238,7 +1238,7 @@ namespace wiselib
 			{
 				#ifdef ROUTING_RPL_DEBUG
 				char str[43];
-				debug().debug( "RPLRouting: This node %s seems isolated, find neighbors again\n", my_address_.get_address(str) );
+				debug().debug( "\nRPLRouting: This node %s seems isolated, find neighbors again\n", my_address_.get_address(str) );
 				#endif
 				neighbors_found_ = false;
 				start();
@@ -1597,10 +1597,10 @@ namespace wiselib
 			{
 				Neighbors_iterator it = neighbors_.find( sender );
 				if( it == neighbors_.end() )
-					neighbors_.insert( n_pair_t( sender, 2 ) );
+					neighbors_.insert( n_pair_t( sender, 3 ) );
 				
 				else
-					it->second = 2;	
+					it->second = 3;	
 
 				packet_pool_mgr_->clean_packet( message );				
 				return;
@@ -1618,10 +1618,22 @@ namespace wiselib
 				NeighborSet_iterator it = neighbor_set_.find( sender );
 				if( it == neighbor_set_.end() )				
 				{	
-					//It must not happen... or maybe...   //remember
+					//This happens when the sender woke up while the protocol is aready running!
+					//Add the node in the neighbor set and compute the ETX values for it
+
+					Mapped_neighbor_set map;
+					map.bidirectionality = false;
+					map.etx_received = true;
+					map.etx_forward = 255;
+					map.etx_reverse = data[5];
+					neighbor_set_.insert( neigh_pair_t( sender, map ) );
+					neighbor_temp_ETX_.insert( temp_pair_t( sender, 0 ) );
+					trigger_ETX_computation( sender.addr );
+
+					NeighborSet_iterator it = neighbor_set_.find( sender );
 				}
 			
-				if( !it->second.etx_received )
+				else if( !it->second.etx_received )
 				{
 					
 					it->second.etx_reverse = data[5];
@@ -3020,7 +3032,7 @@ namespace wiselib
 		if( it != neighbor_temp_ETX_.end() )
 		{
 			it->second = it->second + 1;
-			if( it->second > 5 )   //to change according to the reliability of the network
+			if( it->second > 8 )   //to change according to the reliability of the network
 			{
 				neighbor_temp_ETX_.erase( node );
 				return;
@@ -4044,14 +4056,14 @@ namespace wiselib
 	{
 		char str[43];
 		#ifdef ROUTING_RPL_DEBUG
-		debug().debug( "\nRPL Routing: Node %s, Parent Set with relative path cost: \n", my_address_.get_address(str));
+		debug().debug( "\nRPL Routing: Node %s, Parent Set with relative rank and path cost: \n", my_address_.get_address(str));
 		#endif
 		int i = 0;
 		for( ParentSet_iterator it = parent_set_.begin(); it != parent_set_.end(); it++ )
 		{
 			char str2[43];
 			#ifdef ROUTING_RPL_DEBUG
-			debug().debug( "\n %i: %s, %i ", i, it->first.get_address(str2),  it->second.path_cost );
+			debug().debug( "\n %i: %s, %i, %i ", i, it->first.get_address(str2), it->second.rank, it->second.path_cost );
 			#endif
 			i = i + 1;
 		}
