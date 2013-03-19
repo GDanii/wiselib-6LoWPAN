@@ -868,6 +868,7 @@ namespace wiselib
 			prefix_present_ = true;
 
 			state_ = Dodag_root;
+			
 			if( etx_ )
 			{
 				min_hop_rank_increase_ = 128;
@@ -886,7 +887,6 @@ namespace wiselib
 		}
 		else
 			state_ = Unconnected;
-				
 	}
 	
 	// -----------------------------------------------------------------------
@@ -1872,24 +1872,14 @@ namespace wiselib
 							uint16_t remainder = rank_inc % 128;
 							if( remainder != 0 )
 							{
-								#ifdef ROUTING_RPL_DEBUG
-								debug().debug( "\n\nRPL Routing: (ETX) I'm %s, Computed rank_inc %i through %s\n\n", my_address_.get_address(str), rank_inc, sender.get_address(str2));
-								#endif
 								//fix the approximation error
 								if( remainder > 63 )
 									rank_inc = rank_inc + (128 - remainder);
 								else
 									rank_inc = rank_inc - remainder;
-								#ifdef ROUTING_RPL_DEBUG
-								debug().debug( "\n\nRPL Routing: FIXED rank_inc %i\n\n", rank_inc );
-								#endif
 							}
 
 							parent_path_cost = rank_inc + parent_rank;
-
-							
-
-							//parent_path_cost = increase_rank( parent_rank, rank_inc );
 										
 						}
 						else
@@ -2278,7 +2268,7 @@ namespace wiselib
 					if ( data[49] == 0 )
 					{
 						#ifdef ROUTING_RPL_DEBUG
-						debug().debug( "\nRPL Routing: THIS IS A NO-PATH\n" );
+						debug().debug( "\nRPL Routing: %s Received NO-PATH with target %s, next hop %s\n", my_address_.get_address(str), target.get_address(str2), sender.get_address(str3) );
 						#endif
 
 						//Before deleting check if the next hop matches the link-local sender...
@@ -2316,9 +2306,7 @@ namespace wiselib
 				{
 					if ( data[49] == 0 )
 					{
-						#ifdef ROUTING_RPL_DEBUG
-						debug().debug( "\nRPL Routing: THIS IS A NO-PATH\n" );
-						#endif
+						debug().debug( "\nRPL Routing: %s Received NO-PATH with target %s, next hop %s\n", my_address_.get_address(str), target.get_address(str2), sender.get_address(str3) );
 
 						message->remote_ll_address = Radio_P::NULL_NODE_ID;
 						message->target_interface = NUMBER_OF_INTERFACES;
@@ -2334,21 +2322,26 @@ namespace wiselib
 					else
 					{
 						dao_received_ = true;
-						state_ = Router;
+						if( state_ != Dodag_root )
+						{		
+							//the node might have become a leaf in the meanwhile.	
+							if( state_ == Leaf)
+							{
+								//Activate timers again
+													
+								//timer after which I must double the timer value (if I don't detect inconsistencies)
+								timer().template set_timer<self_type, &self_type::timer_elapsed>( current_interval_, this, 0 );
+								//timer after which I need to send the DIO message
+								timer().template set_timer<self_type, &self_type::threshold_timer_elapsed>( sending_threshold_, this, 0 );
+							
+							}			
+							state_ = Router;
+						}
 						stop_dio_timer_ = false;
 						Forwarding_table_value entry( sender, 0, seq_nr, 0 );
 						radio_ip().routing_.forwarding_table_.insert( ft_pair_t( target, entry ) );
-						//the node might have become a leaf in the meanwhile.
-						if( state_ == Leaf)
-						{
-							//Activate timers again
-													
-							//timer after which I must double the timer value (if I don't detect inconsistencies)
-							timer().template set_timer<self_type, &self_type::timer_elapsed>( current_interval_, this, 0 );
-							//timer after which I need to send the DIO message
-							timer().template set_timer<self_type, &self_type::threshold_timer_elapsed>( sending_threshold_, this, 0 );
-							
-						}
+						
+						
 					}
 				}
 								
@@ -2362,6 +2355,7 @@ namespace wiselib
 				{
 					if( data[5] == 128 )
 					{
+						debug().debug( "\nRPL Routing: ROOT sends DAO-ACK to target: %s\n", target.get_address(str) );
 						//unicast dao_ack to the target, using the same message
 						//set dao_sequence in the right field of the DAO_ACK
 						uint8_t setter_byte = DEST_ADVERT_OBJECT_ACK;
