@@ -1867,7 +1867,7 @@ namespace wiselib
 							float forward = 1/((float)it->second.etx_forward);
 							float reverse = 1/((float)it->second.etx_reverse);
 
-							rank_inc = min_hop_rank_increase_ * (1/(forward * reverse));
+							rank_inc = (uint16_t) ( min_hop_rank_increase_ * (1/(forward * reverse)) );
 
 							uint16_t remainder = rank_inc % 128;
 							if( remainder != 0 )
@@ -2275,13 +2275,19 @@ namespace wiselib
 						//... IF NOT, THE ENTRY WILL NOT BE DELETED!
 						if( it->second.next_hop == sender )
 							radio_ip().routing_.forwarding_table_.erase( it );
+						else
+						{
+							#ifdef ROUTING_RPL_DEBUG
+							debug().debug( "\nRPL Routing: Stop NO-PATH DAO process: reached the common ancestor of the old preferred parent and the new one of the target \n" );
+							#endif
+							packet_pool_mgr_->clean_packet( message );
+							return;
+						}
 						message->remote_ll_address = Radio_P::NULL_NODE_ID;
 						message->target_interface = NUMBER_OF_INTERFACES;
+						message->set_source_address(my_address_);
 						if( transient_preferred_parent_ != Radio_IP::NULL_NODE_ID )
-						{
-							message->set_source_address(my_address_);
 							send( transient_preferred_parent_, packet_number, NULL ); 
-						}
 						else
 							send( preferred_parent_, packet_number, NULL ); 
 						return;				
@@ -3150,7 +3156,7 @@ namespace wiselib
 		if( it != neighbor_temp_ETX_.end() )
 		{
 			it->second = it->second + 1;
-			if( it->second > 8 )   //to change according to the reliability of the network
+			if( it->second > 7 )   //to change according to the reliability of the network (see error in 25% drop test )
 			{
 				neighbor_temp_ETX_.erase( node );
 				return;
@@ -4020,7 +4026,7 @@ namespace wiselib
 								neighbor_set_.erase( preferred_parent_ );
 
 								#ifdef ROUTING_RPL_DEBUG
-								debug().debug( "\nRPLRouting: FINDING NEW PREFERRED PARENT\n" );
+								debug().debug( "\nRPLRouting: Preferred Parent Unreachable: FINDING NEW PREFERRED PARENT\n" );
 								#endif
 								node_id_t best = Radio_IP::NULL_NODE_ID;
 								uint16_t current_best_path_cost = 0xFFFF;
@@ -4036,6 +4042,10 @@ namespace wiselib
 								
 								if( best == Radio_IP::NULL_NODE_ID )
 								{
+
+									#ifdef ROUTING_RPL_DEBUG
+									debug().debug( "\nRPLRouting: NO MORE PARENTS, POISON SUB-DODAG\n" );
+									#endif
 									preferred_parent_ = Radio_IP::NULL_NODE_ID;
 									cur_min_path_cost_ = 0xFFFF;
 									//Node has no parents! Poison the sub-DODAG
@@ -4052,8 +4062,10 @@ namespace wiselib
 								}
 								else
 								{
-							
-									//this delete the parents whose rank is worst than the current one
+									#ifdef ROUTING_RPL_DEBUG
+									debug().debug( "\nRPLRouting: New Preferred Parent is %s, new path cost: %i\n", best.get_address( str ), current_best_path_cost );
+									#endif
+									//this deletes the parents whose rank is worst than the current one
 									update_dio( best, current_best_path_cost);
 								}
 
@@ -4260,7 +4272,7 @@ namespace wiselib
 							neighbor_set_.erase( preferred_parent_ );
 
 							#ifdef ROUTING_RPL_DEBUG
-							debug().debug( "\nRPLRouting: FINDING NEW PREFERRED PARENT\n" );
+							debug().debug( "\nRPLRouting: Preferred Parent Unreachable: FINDING NEW PREFERRED PARENT\n" );
 							#endif
 							node_id_t best = Radio_IP::NULL_NODE_ID;
 							uint16_t current_best_path_cost = 0xFFFF;
@@ -4276,6 +4288,9 @@ namespace wiselib
 								
 							if( best == Radio_IP::NULL_NODE_ID )
 							{
+								#ifdef ROUTING_RPL_DEBUG
+								debug().debug( "\nRPLRouting: NO MORE PARENTS, POISON SUB-DODAG\n" );
+								#endif
 								preferred_parent_ = Radio_IP::NULL_NODE_ID;
 								cur_min_path_cost_ = 0xFFFF;
 								//Node has no parents! Poison the sub-DODAG
@@ -4292,7 +4307,9 @@ namespace wiselib
 							}
 							else
 							{
-							
+								#ifdef ROUTING_RPL_DEBUG
+								debug().debug( "\nRPLRouting: New Preferred Parent is %s, new path cost: %i\n", best.get_address( str ), current_best_path_cost );
+								#endif
 								//this delete the parents whose rank is worst than the current one
 								update_dio( best, current_best_path_cost);
 							}
