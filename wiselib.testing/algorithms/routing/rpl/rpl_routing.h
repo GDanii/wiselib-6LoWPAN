@@ -475,7 +475,7 @@ namespace wiselib
 		uint16_t DAGRank( uint16_t rank )
 		{			
 			if( etx_ )
-				return rank_;
+				return rank;
 			float num = (float)(rank>>8)/(float)min_hop_rank_increase_;
 			
 			uint8_t int_part = (uint8_t)num;
@@ -2318,15 +2318,28 @@ namespace wiselib
 				}
 			}
 			packet_pool_mgr_->clean_packet( message );
-			if( state_ == Unconnected )
+			if( state_ == Unconnected || rank_ == INFINITE_RANK )
 				return;
 			#ifdef ROUTING_RPL_DEBUG
 			char str[43];
 			char str2[43];
-			debug().debug( "RPLRouting: %s Received Unicast DIS from %s, Sending Uincast DIO...\n", my_address_.get_address(str), sender.get_address(str2) );
+			debug().debug( "RPLRouting: %s Received Unicast DIS from %s, Reset Trickle timer...\n", my_address_.get_address(str), sender.get_address(str2) );
 			#endif
-			//For now manage just the initial Solicitation (Unicast DIO to the sender)
-			send_dio( sender, dio_reference_number_, NULL );
+			//Instead of sending a DIO, reset the timer!
+			//send_dio( sender, dio_reference_number_, NULL );
+			set_current_interval(0);
+			compute_sending_threshold();
+			if( state_ == Leaf )
+			{
+				dao_received_ = false;
+				state_ = Connected;
+			
+				timer().template set_timer<self_type, &self_type::leaf_timer_elapsed>(  current_interval_ + 2500, this, 0 );
+				timer().template set_timer<self_type, &self_type::timer_elapsed>( current_interval_, this, 0 );
+				timer().template set_timer<self_type, &self_type::threshold_timer_elapsed>( sending_threshold_, this, 0 );
+
+			}
+
 			
 		}
 		else if( typecode == DEST_ADVERT_OBJECT )
@@ -3799,9 +3812,6 @@ namespace wiselib
 			node_id_t destination;
 			message->destination_address( destination );
 			
-			//MANAGE PACKETS FROM THE OUTSIDE (i.e. add Extension header )
-
-
 			//First check if the last hop is consistent
 			if( destination == my_global_address_ )
 			{
@@ -3812,7 +3822,8 @@ namespace wiselib
 				uint16_t sender_rank = ( data_pointer[4] << 8 ) | data_pointer[5];
 				uint16_t compare_rank = DAGRank( sender_rank );
 				#ifdef ROUTING_RPL_DEBUG
-				debug().debug( "\nRPL Routing: FINAL DESTINATION, my rank is %i\n", DAGRank( rank_ ) );
+				char str[43];
+				debug().debug( "\nRPL Routing: %s FINAL DESTINATION, my rank is %i\n", my_global_address_.get_address( str ), DAGRank( rank_ ) );
 				#endif
 
 				if( compare_rank == 0 )
@@ -3884,7 +3895,10 @@ namespace wiselib
 					send_dis( dodag_id_, dis_reference_number_, NULL );
 					
 				}
-				
+				print_neighbors();
+				print_neighbor_set();
+				print_parent_set();
+				radio_ip().routing_.print_forwarding_table();
 				#ifdef ROUTING_RPL_DEBUG
 				debug().debug( "\nRPL Routing:THIS SHOULD BE PRINTED BY THE DESTINATION IF THE DODAG IS CONSISTENT.\n" );
 				#endif
@@ -3905,13 +3919,13 @@ namespace wiselib
 				if( state_ == Unconnected )
 				{
 					#ifdef ROUTING_RPL_DEBUG
-					debug().debug( "\nRPL Routing: NOT CONECTED TO THE DODAG!\n" );
+					debug().debug( "\nRPL Routing: %s NOT CONECTED TO THE DODAG!\n", my_address_.get_address( str ) );
 					#endif
 					return  Radio_IP::DROP_PACKET;
 				}
 
 				#ifdef ROUTING_RPL_DEBUG
-				debug().debug( "\nRPL Routing: SOURCE NODE, my rank is %i\n", DAGRank( rank_ ) );
+				debug().debug( "\nRPL Routing: %s SOURCE NODE, my rank is %i\n", my_global_address_.get_address( str ), DAGRank( rank_ ) );
 				#endif				
 				
 				//first node, fill the HOHO EH fields
@@ -3934,7 +3948,7 @@ namespace wiselib
 					//If not reacheble send no-path DAO and delete entry
 					if( !is_still_neighbor( it->second.next_hop ) )
 					{
-						//send No-path DAO specifying the target!
+						//send No-path DAO specifying the target! Or the next hop?
 						send_no_path_dao( destination );
 						//delete entry
 						radio_ip().routing_.forwarding_table_.erase( it );
@@ -4004,7 +4018,9 @@ namespace wiselib
 							//UPDATE THE RANK FIELD IN THE DIO message
 
 							dio_message_->template set_payload<uint16_t>( &rank_, 6, 1 );
-
+								
+							//solicit neighborhood
+							send_dis( Radio_IP::BROADCAST_ADDRESS, dis_reference_number_, NULL );
 							//This message may be lost in the network
 							send_dio( Radio_IP::BROADCAST_ADDRESS, dio_reference_number_, NULL );
 						}
@@ -4126,7 +4142,13 @@ namespace wiselib
 								debug().debug( "\nRPL Routing: INTERMEDIATE NODE 1st, Forwarding Error, send back to the preferred parent (source) \n" );
 								#endif
 								//FIRST DOWN, THEN UP ===> BACK TO THE SENDER WITH FORWARDING ERROR (RFC 6550, pag 104)
-								//the sender is the preferred parent...							
+								//the sender is the preferred parent...
+
+
+
+								//DO IT (REMEMBER)
+			
+							
 								//Increment DTSN? ...
 								
 								//set rank to 0 because the packet will be sent back to the source
@@ -4188,9 +4210,11 @@ namespace wiselib
 									stop_dio_timer_ = true;
 	
 									//UPDATE THE RANK FIELD IN THE DIO message
-
+	
 									dio_message_->template set_payload<uint16_t>( &rank_, 6, 1 );
-
+									
+									//solicit neighborhood
+									send_dis( Radio_IP::BROADCAST_ADDRESS, dis_reference_number_, NULL );
 									//This message may be lost in the network
 									send_dio( Radio_IP::BROADCAST_ADDRESS, dio_reference_number_, NULL );
 								}
@@ -4456,7 +4480,8 @@ namespace wiselib
 								//UPDATE THE RANK FIELD IN THE DIO message
 
 								dio_message_->template set_payload<uint16_t>( &rank_, 6, 1 );
-
+								//solicit neighborhood
+								send_dis( Radio_IP::BROADCAST_ADDRESS, dis_reference_number_, NULL );
 								//This message may be lost in the network
 								send_dio( Radio_IP::BROADCAST_ADDRESS, dio_reference_number_, NULL );
 							}
