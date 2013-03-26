@@ -155,7 +155,7 @@ namespace wiselib
 			uint8_t current_version;
 			uint8_t grounded;
 			uint8_t metric_type;
-			//uint8_t dtsn;
+			uint8_t dtsn;
 		};
 				
 		typedef MapStaticVector<OsModel , node_id_t,  Mapped_parent_set, PARENT_SET_SIZE> ParentSet;
@@ -1885,19 +1885,40 @@ namespace wiselib
 								
 							//this delete the parents whose rank is worst than the current one
 							update_dio( best, current_best_path_cost);
-								
+							
+							if( state_ == Leaf )
+							{
+								dao_received_ = false;
+								state_ = Connected;
+			
+								timer().template set_timer<self_type, &self_type::leaf_timer_elapsed>(  current_interval_ + 2500, this, 0 );
+								timer().template set_timer<self_type, &self_type::timer_elapsed>( current_interval_, this, 0 );
+								timer().template set_timer<self_type, &self_type::threshold_timer_elapsed>( sending_threshold_, this, 0 );
+									
+							}
+															
 							//SEND DAO, Change the DaoSequenceNumber and PathSequence
 							//REMEMBER TO WRAP AROUND WHEN REACHING THE VALUE LIMIT
 							find_worst_parent();
-					
-							dao_ack_received_ = false;
+							
+							
 							dao_sequence_ = dao_sequence_ + 1;
 							dao_message_->template set_payload<uint8_t>( &dao_sequence_, 7, 1 );
 							path_sequence_ = path_sequence_ + 1;
 							dao_message_->template set_payload<uint8_t>( &path_sequence_, 48, 1 );
-							//DAO sent automatically thanks to the timer
+
+							if( dao_ack_received_ )
+							{
+								//reactivate dao_timer
+								dao_ack_received_ = false;
+								timer().template set_timer<self_type, &self_type::dao_timer_elapsed>( 300, this, 0 );
+							}
+
+							
 							transient_preferred_parent_ = old_preferred_parent_;
 							timer().template set_timer<self_type, &self_type::transient_parent_timer_elapsed>( 5000, this, 0 );
+							//DAO sent automatically thanks to the timer+
+
 						}
 					}				
 					packet_pool_mgr_->clean_packet( message );
@@ -1917,8 +1938,12 @@ namespace wiselib
 			
 				if( version_number_ != data[5] )
 				{
+					#ifdef ROUTING_RPL_DEBUG
+					debug().debug( "\n\nRPL Routing: I'm %s, different version received!?\n\n", my_address_.get_address(str) );
+					#endif
 					if( version_number_ > data[5] )
 					{
+						
 						//The received DIO represents an older version => ignore the message
 						packet_pool_mgr_->clean_packet( message );
 						return;
@@ -2009,7 +2034,8 @@ namespace wiselib
 					map.current_version = data[5];
 					uint8_t grounded = data[8];
 					grounded = (grounded >> 7);
-					map.grounded = grounded;		
+					map.grounded = grounded;
+					//map.dtsn = data[9];		
 										
 					dio_count_ = dio_count_ + 1;
 
@@ -2034,8 +2060,12 @@ namespace wiselib
 						ParentSet_iterator it = parent_set_.find(sender);
 						if (it == parent_set_.end())
 						{
+							#ifdef ROUTING_RPL_DEBUG
+							debug().debug( "\nRPLRouting: %s: Parent %s not present in parent set. \n", my_address_.get_address( str ), sender.get_address(str3) );
+							#endif
 							map.rank = parent_rank;
 							map.path_cost = parent_path_cost;
+							map.dtsn = data[9];
 							//WHAT IF THE PARENT SET IS FULL?
 							if( parent_set_.size() == parent_set_.max_size() )
 							{
@@ -2112,8 +2142,8 @@ namespace wiselib
 						else if( it->second.path_cost != parent_path_cost ) 
 						{
 							it->second.rank = parent_rank;
-							it->second.path_cost = parent_path_cost;						
-
+							it->second.path_cost = parent_path_cost;
+							it->second.dtsn = data[9];
 							if ( sender == preferred_parent_ )
 							{	
 								#ifdef ROUTING_RPL_DEBUG
@@ -2178,7 +2208,9 @@ namespace wiselib
 									#endif
 									//send no-dao to the old preferred_parent
 									send_no_path_dao( my_global_address_ );
-									//should I reset the timers??? MAYBE, check rules
+									
+									//Don't need to change dtsn since the rank is changed as well...
+									// ... and it is enough to trigger DAO updates
 									update_dio( sender, parent_path_cost); 
 								
 									if( state_ == Leaf )
@@ -2226,6 +2258,47 @@ namespace wiselib
 						else
 						{
 							//Not significant update: present in parent set and same path cost
+							// Check dtsn, if it is changed, change this one and send dao updates
+							uint8_t current_dtsn = it->second.dtsn;
+							
+							if( current_dtsn != data[9] )
+							{
+								it->second.dtsn = data[9];
+								//reactivate dao_timer
+								if( sender != preferred_parent_ )
+								{
+									packet_pool_mgr_->clean_packet( message );
+									return;	
+								}
+								
+								#ifdef ROUTING_RPL_DEBUG
+								debug().debug( "\nRPLRouting: %s: Preferred parent %s changed its dtsn.\n", my_address_.get_address( str ), sender.get_address( str2 ));
+								#endif
+
+								//update dao_sequence!!!!
+								dao_sequence_ = dao_sequence_ + 1;
+								dao_message_->template set_payload<uint8_t>( &dao_sequence_, 7, 1 );
+								path_sequence_ = path_sequence_ + 1;
+								dao_message_->template set_payload<uint8_t>( &path_sequence_, 48, 1 );
+
+								if( dao_ack_received_ )
+								{
+									#ifdef ROUTING_RPL_DEBUG
+									debug().debug( "\nRPLRouting: Activate DAO Timer.\n", my_address_.get_address( str ), sender.get_address( str2 ));
+									#endif
+									//reactivate dao_timer
+									dao_ack_received_ = false;
+									timer().template set_timer<self_type, &self_type::dao_timer_elapsed>( 300, this, 0 );
+								}
+								dtsn_ = dtsn_ + 1;
+								//update DIO
+								dio_message_->template set_payload<uint8_t>( &dtsn_, 9, 1 );
+
+								//reset timers
+								set_current_interval(0);
+								compute_sending_threshold();
+
+							}
 							packet_pool_mgr_->clean_packet( message );
 							return;	
 						}
@@ -2944,6 +3017,7 @@ namespace wiselib
 		uint8_t grounded = data[8];
 		grounded = (grounded >> 7);
 		map.grounded = grounded;
+		map.dtsn = data[9];
 		float rank_inc;
 		//step_of_rank depends on the metric! (updated when scanning Dag Metric Container, see obove)		
 		if (ocp_ == 0 )
@@ -3033,7 +3107,7 @@ namespace wiselib
 		dio_message_->template set_payload<uint8_t>( &setter_byte, 8, 1 );
 		setter_byte = data[9];
 		//DTSN (used to maintain Downward routes) 
-		dio_message_->template set_payload<uint8_t>( &setter_byte, 9, 1 );
+		dio_message_->template set_payload<uint8_t>( &dtsn_, 9, 1 );
 		//Flags and Reserved fields 0 by default
 		setter_byte = data[10];
 		dio_message_->template set_payload<uint8_t>( &setter_byte, 10, 1 );
@@ -3083,7 +3157,7 @@ namespace wiselib
 		dio_message_->template set_payload<uint8_t>( &setter_byte, position + 4, 1 );
 		setter_byte = 0;
 		//DTSN (used to maintain Downward routes) 
-		dio_message_->template set_payload<uint8_t>( &setter_byte, position + 5, 1 );
+		dio_message_->template set_payload<uint8_t>( &dtsn_, position + 5, 1 );
 		//Flags and Reserved fields 0 by default
 		dio_message_->template set_payload<uint8_t>( &setter_byte, position + 6, 1 );
 		dio_message_->template set_payload<uint8_t>( &setter_byte, position + 7, 1 );
@@ -3772,8 +3846,6 @@ namespace wiselib
 			parent_set_.erase( it_er->node );
 		}
 
-
-
 		//reset timers!
 		set_current_interval(0);
 		compute_sending_threshold();
@@ -4008,6 +4080,9 @@ namespace wiselib
 							#ifdef ROUTING_RPL_DEBUG
 							debug().debug( "\nRPLRouting: NO MORE PARENTS, POISON SUB-DODAG\n" );
 							#endif
+							old_preferred_parent_ = preferred_parent_;
+							transient_preferred_parent_ = old_preferred_parent_;
+							timer().template set_timer<self_type, &self_type::transient_parent_timer_elapsed>( 5000, this, 0 );
 							preferred_parent_ = Radio_IP::NULL_NODE_ID;
 							cur_min_path_cost_ = 0xFFFF;
 							//Node has no parents! Poison the sub-DODAG
@@ -4029,9 +4104,43 @@ namespace wiselib
 							#ifdef ROUTING_RPL_DEBUG
 							debug().debug( "\nRPLRouting: New Preferred Parent is %s, new path cost: %i, parent_rank: %i:\n", best.get_address( str ), current_best_path_cost, best_parent_rank );
 							#endif
+							dtsn_ = dtsn_ + 1;
 							
-							//this also delete the parents whose rank is worst than the current one
+							//update DIO
+							dio_message_->template set_payload<uint8_t>( &dtsn_, 9, 1 );
+							//this also delete the parents whose rank is worst than the current one and reset timers
 							update_dio( best, current_best_path_cost);
+							//even if the timer is reset, send some DIOs anyway because...
+							//...it may happen that the old timer has a huge value!	
+							send_dio( Radio_IP::BROADCAST_ADDRESS, dio_reference_number_, NULL );
+							
+							find_worst_parent();
+							if( state_ == Leaf )
+							{
+								stop_dio_timer_ = false;
+								dao_received_ = false;
+								state_ = Connected;
+			
+								timer().template set_timer<self_type, &self_type::leaf_timer_elapsed>(  current_interval_ + 2500, this, 0 );
+								timer().template set_timer<self_type, &self_type::timer_elapsed>( current_interval_, this, 0 );
+								timer().template set_timer<self_type, &self_type::threshold_timer_elapsed>( sending_threshold_, this, 0 );
+									
+							}
+							//SEND DAO, Change the DaoSequenceNumber, PathSequence
+							//REMEMBER TO WRAP AROUND WHEN REACHING THE VALUE LIMIT
+							//FIRST SEND NO PATH DAO to the old preferred parent
+							dao_sequence_ = dao_sequence_ + 1;
+							dao_message_->template set_payload<uint8_t>( &dao_sequence_, 7, 1 );
+							path_sequence_ = path_sequence_ + 1;
+							dao_message_->template set_payload<uint8_t>( &path_sequence_, 48, 1 );		
+
+							if( dao_ack_received_ )
+							{
+								//reactivate dao_timer
+								dao_ack_received_ = false;
+								timer().template set_timer<self_type, &self_type::dao_timer_elapsed>( 300, this, 0 );
+							}		
+							send_dio( Radio_IP::BROADCAST_ADDRESS, dio_reference_number_, NULL );
 							return Radio_IP::CORRECT;
 						}
 
@@ -4202,6 +4311,9 @@ namespace wiselib
 									#ifdef ROUTING_RPL_DEBUG
 									debug().debug( "\nRPLRouting: NO MORE PARENTS, POISON SUB-DODAG\n" );
 									#endif
+									old_preferred_parent_ = preferred_parent_;
+									transient_preferred_parent_ = old_preferred_parent_;
+									timer().template set_timer<self_type, &self_type::transient_parent_timer_elapsed>( 5000, this, 0 );
 									preferred_parent_ = Radio_IP::NULL_NODE_ID;
 									cur_min_path_cost_ = 0xFFFF;
 									//Node has no parents! Poison the sub-DODAG
@@ -4220,11 +4332,61 @@ namespace wiselib
 								}
 								else
 								{
+
 									#ifdef ROUTING_RPL_DEBUG
-									debug().debug( "\nRPLRouting: New Preferred Parent is %s, new path cost: %i, parent_rank: %i:\n", best.get_address( str ), current_best_path_cost, best_parent_rank );
+									debug().debug( "\nRPLRouting: New Preferred Parent is %s, new path cost: %i, parent_rank: %i\n", best.get_address( str ), current_best_path_cost, best_parent_rank );
 									#endif
-									//this deletes the parents whose rank is worst than the current one
+									dtsn_ = dtsn_ + 1;
+									
+									//update DIO
+									dio_message_->template set_payload<uint8_t>( &dtsn_, 9, 1 );
+
+
+									block_data_t *data = dio_message_->payload();
+								
+									//this also delete the parents whose rank is worst than the current one and reset timers
 									update_dio( best, current_best_path_cost);
+									//even if the timer is reset, send some DIOs anyway because...
+									//...it may happen that the old timer has a huge value!	
+									send_dio( Radio_IP::BROADCAST_ADDRESS, dio_reference_number_, NULL );	
+
+									find_worst_parent();
+
+									//stop_dio_timer_ = false;
+									if( state_ == Leaf )
+									{
+										
+										dao_received_ = false;
+										state_ = Connected;
+										#ifdef ROUTING_RPL_DEBUG
+										debug().debug( "\nRPLRouting: REACTIVATE TIMERS\n" );
+										#endif
+										timer().template set_timer<self_type, &self_type::leaf_timer_elapsed>(  current_interval_ + 2500, this, 0 );
+										timer().template set_timer<self_type, &self_type::timer_elapsed>( current_interval_, this, 0 );
+										timer().template set_timer<self_type, &self_type::threshold_timer_elapsed>( sending_threshold_, this, 0 );
+									
+									}
+									
+									
+									#ifdef ROUTING_RPL_DEBUG
+									debug().debug( "\nRPLRouting: dio timer is %i, sending_threshold is %i\n", current_interval_, sending_threshold_ );
+									#endif									
+
+
+									//SEND DAO, Change the DaoSequenceNumber, PathSequence
+									//REMEMBER TO WRAP AROUND WHEN REACHING THE VALUE LIMIT
+									//FIRST SEND NO PATH DAO to the old preferred parent
+									dao_sequence_ = dao_sequence_ + 1;
+									dao_message_->template set_payload<uint8_t>( &dao_sequence_, 7, 1 );
+									path_sequence_ = path_sequence_ + 1;
+									dao_message_->template set_payload<uint8_t>( &path_sequence_, 48, 1 );
+
+									if( dao_ack_received_ )
+									{
+										dao_ack_received_ = false;
+										timer().template set_timer<self_type, &self_type::dao_timer_elapsed>( 300, this, 0 );
+									}
+									send_dio( Radio_IP::BROADCAST_ADDRESS, dio_reference_number_, NULL );
 									//Dodag repaired
 									return Radio_IP::CORRECT;
 								}
@@ -4470,6 +4632,9 @@ namespace wiselib
 								#ifdef ROUTING_RPL_DEBUG
 								debug().debug( "\nRPLRouting: NO MORE PARENTS, POISON SUB-DODAG\n" );
 								#endif
+								old_preferred_parent_ = preferred_parent_;
+								transient_preferred_parent_ = old_preferred_parent_;
+								timer().template set_timer<self_type, &self_type::transient_parent_timer_elapsed>( 5000, this, 0 );
 								preferred_parent_ = Radio_IP::NULL_NODE_ID;
 								cur_min_path_cost_ = 0xFFFF;
 								//Node has no parents! Poison the sub-DODAG
@@ -4490,8 +4655,42 @@ namespace wiselib
 								#ifdef ROUTING_RPL_DEBUG
 								debug().debug( "\nRPLRouting: New Preferred Parent is %s, new path cost: %i, parent_rank: %i:\n", best.get_address( str ), current_best_path_cost, best_parent_rank );
 								#endif
-								//this delete the parents whose rank is worst than the current one
+								dtsn_ = dtsn_ + 1;
+								//update DIO
+								dio_message_->template set_payload<uint8_t>( &dtsn_, 9, 1 );
+								//this also delete the parents whose rank is worst than the current one and reset timers
 								update_dio( best, current_best_path_cost);
+								//even if the timer is reset, send some DIOs anyway because...
+								//...it may happen that the old timer has a huge value!	
+								send_dio( Radio_IP::BROADCAST_ADDRESS, dio_reference_number_, NULL );
+								find_worst_parent();
+						
+								if( state_ == Leaf )
+								{
+									dao_received_ = false;
+									state_ = Connected;
+			
+									timer().template set_timer<self_type, &self_type::leaf_timer_elapsed>(  current_interval_ + 2500, this, 0 );
+									timer().template set_timer<self_type, &self_type::timer_elapsed>( current_interval_, this, 0 );
+									timer().template set_timer<self_type, &self_type::threshold_timer_elapsed>( sending_threshold_, this, 0 );
+									
+								}
+								//SEND DAO, Change the DaoSequenceNumber, PathSequence
+								//REMEMBER TO WRAP AROUND WHEN REACHING THE VALUE LIMIT
+								//FIRST SEND NO PATH DAO to the old preferred parent
+								dao_sequence_ = dao_sequence_ + 1;
+								dao_message_->template set_payload<uint8_t>( &dao_sequence_, 7, 1 );
+								path_sequence_ = path_sequence_ + 1;
+								dao_message_->template set_payload<uint8_t>( &path_sequence_, 48, 1 );		
+
+								if( dao_ack_received_ )
+								{
+									//reactivate dao_timer
+									dao_ack_received_ = false;
+									timer().template set_timer<self_type, &self_type::dao_timer_elapsed>( 300, this, 0 );
+								}
+		
+								send_dio( Radio_IP::BROADCAST_ADDRESS, dio_reference_number_, NULL );
 								//Dodag repaired
 								return Radio_IP::CORRECT;
 							}
