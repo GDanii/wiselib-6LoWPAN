@@ -368,6 +368,8 @@ namespace wiselib
 		void no_path_timer_elapsed( void* userdata );
 
 		void transient_parent_timer_elapsed( void* userdata );
+	
+		void more_dio_timer_elapsed( void* userdata );
 			
 		void trigger_ETX_computation( uint8_t *addr );
 
@@ -408,8 +410,6 @@ namespace wiselib
 		void update_dio( node_id_t parent, uint16_t path_cost );
 
 		void find_worst_parent();
-
-		uint8_t delete_neighbor( node_id_t neighbor );
 
 		int handle_TLV( uint8_t packet_number, uint8_t* data_pointer, bool only_usage );
 
@@ -474,7 +474,7 @@ namespace wiselib
 
 		uint16_t DAGRank( uint16_t rank )
 		{			
-			if( etx_ )
+			if( etx_ || ocp_ == 0 )
 				return rank;
 			float num = (float)(rank>>8)/(float)min_hop_rank_increase_;
 			
@@ -483,42 +483,7 @@ namespace wiselib
 			
 		}
 
-		//RFC 6551: If ETX is used Rank value = ETX * 128, where 128 is the min_hop_rank_increase
-		/*
-		uint16_t increase_rank( uint16_t parent_rank, float rank_inc )
-		{
-			uint8_t int_part;
-
-			uint8_t dec_part;
-
-			uint16_t through_parent = parent_rank + (uint16_t)rank_inc;
-			
-			if(rank_inc < min_hop_rank_increase_)
-			{
-				int_part = (parent_rank >> 8) + min_hop_rank_increase_;
-				uint16_t temp = (parent_rank << 8);
-				dec_part = (temp >> 8 );
-			}
-				
-			else
-			{
-				uint8_t int_part = (parent_rank >> 8) + (uint8_t) rank_inc;
-				uint16_t temp = (parent_rank << 8);
-				dec_part = (temp >> 8 );
-				uint8_t temp2 = (uint8_t)((rank_inc - (int)rank_inc) * 100);
-				dec_part = dec_part + temp2;
-				
-			}
-			uint16_t return_value = (int_part << 8 ) | (dec_part);
-			
-			return return_value;
-		}
-		*/
-		
-		
 		// -------------------------------------------------------------------------------------------------
-
-		
 
 	private:
 
@@ -670,6 +635,8 @@ namespace wiselib
 				
 		uint8_t dio_count_;
 
+		uint8_t more_dio_count_;
+
 		uint8_t dao_sequence_;
 		uint8_t path_sequence_;
 
@@ -715,6 +682,7 @@ namespace wiselib
 		dao_received_ (false),
 		state_ (Unconnected),
 		dio_count_ (0),
+		more_dio_count_ (2),
 		dis_count_ (0),
 		bcast_neigh_count_ (0),
 		no_path_count_ (0),
@@ -972,14 +940,7 @@ namespace wiselib
 	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
 	start2( void* userdata )
 	{	
-		/*
-		#ifdef ROUTING_RPL_DEBUG
-		char str[43];
-		char str2[43];
-		debug().debug( "RPLRouting: My link-local address: %s My Global address: %s \n", my_address_.get_address(str), my_global_address_.get_address(str2) );
-		#endif
-		*/
-
+		
 		if( !neighbors_found_ )
 		{
 			//set timer in order for nodes to wait the protocol to compute ETX values
@@ -1356,6 +1317,28 @@ namespace wiselib
 			version_last_time_ = version_number_;
 			stop_dio_timer_ = false;
 		}
+	}
+
+	// -----------------------------------------------------------------------
+	
+	template<typename OsModel_P,
+		typename Radio_IP_P,
+		typename Radio_P,
+		typename Debug_P,
+		typename Timer_P,
+		typename Clock_P>
+	void
+	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
+	more_dio_timer_elapsed( void* userdata )
+	{
+		if( more_dio_count_ > 0  )
+		{
+			send_dio( Radio_IP::BROADCAST_ADDRESS, dio_reference_number_, NULL );
+			timer().template set_timer<self_type, &self_type::more_dio_timer_elapsed>( 100, this, 0 );
+			more_dio_count_ = more_dio_count_ - 1;
+		}
+		else
+			more_dio_count_ = 0;
 	}
 
 	// -----------------------------------------------------------------------
@@ -3457,104 +3440,7 @@ namespace wiselib
 		timer().template set_timer<self_type, &self_type::periodic_bcast_elapsed>( 2200, this, 0 );
 
 	}
-
 	
-	// -----------------------------------------------------------------------
-	/*
-	template<typename OsModel_P,
-		typename Radio_IP_P,
-		typename Radio_P,
-		typename Debug_P,
-		typename Timer_P,
-		typename Clock_P>
-	uint8_t
-	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
-	delete_neighbor( node_id_t neighbor )
-	{
-		
-		neighbor_set_.erase( neighbor );
-
-		//IMPORTANT: CLEAN ALSO THE POSSIBLE ENTRY IN THE FORWARDING TABLE
-		ForwardingTableIterator it_neigh = radio_ip().routing_.forwarding_table_.find( neighbor );
-		radio_ip().routing_.forwarding_table_.erase( it_neigh );
-			
-		
-		if( state_ == Dodag_root || state_ == Floating_Dodag_root )
-			return 0;
-		else
-			parent_set_.erase( neighbor );
-
-		find_worst_parent();
-		//what if it was a preferred parent? If not I can go on, since there's at least an entry in the parent_set
-		if( neighbor == preferred_parent_ )
-		{
-			//verify if it was the only one, if so send dis and start dis_timer, otherwise elect new preferred_parent
-			//ParentSet_iterator it = parent_set_.begin();
-			if( parent_set_.empty() )
-			{
-				#ifdef ROUTING_RPL_DEBUG
-				debug().debug( "\nRPLRouting: NO MORE PARENTS, ADVERTISE INFINITE RANK\n" );
-				#endif
-
-				//Delete default route
-				ForwardingTableIterator default_route = radio_ip().routing_.forwarding_table_.find( Radio_IP::NULL_NODE_ID );
-				radio_ip().routing_.forwarding_table_.erase( default_route );
-				
-				rank_ = INFINITE_RANK;
-				state_ = Unconnected;
-				preferred_parent_ = Radio_IP::NULL_NODE_ID;
-				dio_message_->template set_payload<uint16_t>( &rank_, 6, 1 );
-				//This message might not be received by the sub_DODAG!
-				//It seems that there's a sort of self-correction, loops are impossible to occur!
-				send_dio( Radio_IP::BROADCAST_ADDRESS, dio_reference_number_, NULL );  
-
-				//STOP TIMERS?
-				stop_timers_ = true;
-				//send DIS? ...CREATE FLOATING DODAG if no response to DIS received
-				timer().template set_timer<self_type, &self_type::dis_delay>( 1000, this, 0 );
-				return 1;	
-			}
-			else
-			{
-				#ifdef ROUTING_RPL_DEBUG
-				debug().debug( "\nRPLRouting: FINDING NEW PREFERRED PARENT\n" );
-				#endif
-				node_id_t best = Radio_IP::NULL_NODE_ID;
-				uint16_t current_best_path_cost = 0xFFFF;
-		
-				for (ParentSet_iterator it = parent_set_.begin(); it != parent_set_.end(); it++)
-				{
-					if ( it->second.path_cost < current_best_path_cost )
-					{
-						current_best_path_cost = it->second.path_cost;
-						best = it->first;
-					}
-				}
-															
-				//NEW PREFERRED PARENT
-				update_dio( best, current_best_path_cost);
-
-				//SEND DAO, NO NEED TO PREPARE IT.. BUT CHANGE THE DaoSequenceNumber
-				//uint8_t dao_length;
-				//dao_length = prepare_dao();
-				//dao_message_->set_transport_length( dao_length );
-				
-				
-				if( best != Radio_IP::NULL_NODE_ID) //the else is impossible (empty parent set managed in the previous if block)
-				{
-					dao_ack_received_ = false;
-					dao_sequence_ = dao_sequence_ + 1;
-					dao_message_->template set_payload<uint8_t>( &dao_sequence_, 7, 1 );
-					path_sequence_ = path_sequence_ + 1;
-					dao_message_->template set_payload<uint8_t>( &path_sequence_, 48, 1 );
-				}
-				
-				return 0;
-			}
-		}
-		return 0;
-	}
-	*/
 	// -----------------------------------------------------------------------
 	
 	template<typename OsModel_P,
@@ -3947,6 +3833,7 @@ namespace wiselib
 						}
 						
 						//DON'T DROP IT, This is the destination... but anyway advertise nodes!
+						//DO IT (REMEMBER)
 						return Radio_IP::DROP_PACKET;
 					}
 					else
@@ -4112,8 +3999,7 @@ namespace wiselib
 							update_dio( best, current_best_path_cost);
 							//even if the timer is reset, send some DIOs anyway because...
 							//...it may happen that the old timer has a huge value!	
-							send_dio( Radio_IP::BROADCAST_ADDRESS, dio_reference_number_, NULL );
-							
+														
 							find_worst_parent();
 							if( state_ == Leaf )
 							{
@@ -4141,6 +4027,7 @@ namespace wiselib
 								timer().template set_timer<self_type, &self_type::dao_timer_elapsed>( 300, this, 0 );
 							}		
 							send_dio( Radio_IP::BROADCAST_ADDRESS, dio_reference_number_, NULL );
+							timer().template set_timer<self_type, &self_type::more_dio_timer_elapsed>( 100, this, 0 );
 							return Radio_IP::CORRECT;
 						}
 
@@ -4254,7 +4141,6 @@ namespace wiselib
 								//the sender is the preferred parent...
 
 
-
 								//DO IT (REMEMBER)
 			
 							
@@ -4348,8 +4234,7 @@ namespace wiselib
 									update_dio( best, current_best_path_cost);
 									//even if the timer is reset, send some DIOs anyway because...
 									//...it may happen that the old timer has a huge value!	
-									send_dio( Radio_IP::BROADCAST_ADDRESS, dio_reference_number_, NULL );	
-
+									
 									find_worst_parent();
 
 									//stop_dio_timer_ = false;
@@ -4387,6 +4272,7 @@ namespace wiselib
 										timer().template set_timer<self_type, &self_type::dao_timer_elapsed>( 300, this, 0 );
 									}
 									send_dio( Radio_IP::BROADCAST_ADDRESS, dio_reference_number_, NULL );
+									timer().template set_timer<self_type, &self_type::more_dio_timer_elapsed>( 100, this, 0 );
 									//Dodag repaired
 									return Radio_IP::CORRECT;
 								}
@@ -4585,11 +4471,11 @@ namespace wiselib
 							#ifdef ROUTING_RPL_DEBUG
 							debug().debug( "\nRPL Routing: Node %s INTERMEDIATE NODE, going up again again. Forward packet to default route %s for destination %s, \n", my_global_address_.get_address(str3), preferred_parent_.get_address(str2), destination.get_address(str));
 							#endif
-							//CLEAR DOWN BIT, RANK ERROR (verify), Forwarding error = 0
+							//CLEAR DOWN BIT, RANK ERROR (verify), Forwarding error = 1
 							if( rank_error == 1 )
-								data_pointer[2] = 64;
+								data_pointer[2] = 96;
 							else
-								data_pointer[2] = 0;
+								data_pointer[2] = 32;
 						}
 			
 						else
@@ -4662,7 +4548,6 @@ namespace wiselib
 								update_dio( best, current_best_path_cost);
 								//even if the timer is reset, send some DIOs anyway because...
 								//...it may happen that the old timer has a huge value!	
-								send_dio( Radio_IP::BROADCAST_ADDRESS, dio_reference_number_, NULL );
 								find_worst_parent();
 						
 								if( state_ == Leaf )
@@ -4691,6 +4576,8 @@ namespace wiselib
 								}
 		
 								send_dio( Radio_IP::BROADCAST_ADDRESS, dio_reference_number_, NULL );
+								timer().template set_timer<self_type, &self_type::more_dio_timer_elapsed>( 100, this, 0 );
+								
 								//Dodag repaired
 								return Radio_IP::CORRECT;
 							}
