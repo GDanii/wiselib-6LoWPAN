@@ -370,6 +370,8 @@ namespace wiselib
 		void transient_parent_timer_elapsed( void* userdata );
 	
 		void more_dio_timer_elapsed( void* userdata );
+
+		void delayed_restart_timer_elapsed( void* userdata );
 			
 		void trigger_ETX_computation( uint8_t *addr );
 
@@ -1351,6 +1353,35 @@ namespace wiselib
 		typename Clock_P>
 	void
 	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
+	delayed_restart_timer_elapsed( void* userdata )
+	{
+		//Send some DIOs quickly
+		//send_dio( Radio_IP::BROADCAST_ADDRESS, dio_reference_number_, NULL );
+		timer().template set_timer<self_type, &self_type::more_dio_timer_elapsed>( 300, this, 0 );
+								
+		//reset timer
+		set_current_interval(0);
+		compute_sending_threshold();
+		if( state_ == Leaf )
+		{
+			dao_received_ = false;
+			state_ = Connected;
+			timer().template set_timer<self_type, &self_type::leaf_timer_elapsed>(  current_interval_ + 2500, this, 0 );
+			timer().template set_timer<self_type, &self_type::timer_elapsed>( current_interval_, this, 0 );
+			timer().template set_timer<self_type, &self_type::threshold_timer_elapsed>( sending_threshold_, this, 0 );
+		}
+	}
+
+	// -----------------------------------------------------------------------
+	
+	template<typename OsModel_P,
+		typename Radio_IP_P,
+		typename Radio_P,
+		typename Debug_P,
+		typename Timer_P,
+		typename Clock_P>
+	void
+	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
 	no_path_timer_elapsed( void* userdata )
 	{
 		send_dao( old_preferred_parent_, no_path_reference_number_, NULL );
@@ -1829,7 +1860,7 @@ namespace wiselib
 							#ifdef ROUTING_RPL_DEBUG
 							debug().debug( "\n\nRPL Routing: NO More Parents, stop timers and poison Sub-DODAG\n\n" );
 							#endif
-							parent_set_.erase( sender );
+							
 							ForwardingTableIterator default_route = radio_ip().routing_.forwarding_table_.find( Radio_IP::NULL_NODE_ID );
 							radio_ip().routing_.forwarding_table_.erase( default_route );
 							rank_ = INFINITE_RANK;
@@ -1849,6 +1880,13 @@ namespace wiselib
 						else
 						{
 							//FIND NEW PREFERRED PARENT, update dio
+							//maybe it is better to send DIS and ignore DIO messages from the sub-dodag
+							//...OR DELAY THIS PROCESS...
+							//... or better: send dis and delay this process!!!
+							send_dis( Radio_IP::BROADCAST_ADDRESS, dis_reference_number_, NULL );
+							
+							//TAKE CARE HERE TO THE COUNT TO INFINITY!!!!!!
+							//Delay finding Parent?
 							#ifdef ROUTING_RPL_DEBUG
 							debug().debug( "\n\nRPL Routing: Finding new Parent...\n\n" );
 							#endif
@@ -2081,8 +2119,9 @@ namespace wiselib
 								//should I stop the timers??? NO JUST CHANGE THE VALUES IN DIO MESSAGE
 								update_dio( sender, parent_path_cost); 
 																
-								if( state_ == Leaf )
+								if( state_ == Leaf || stop_dio_timer_ )
 								{
+									stop_dio_timer_ = false;
 									dao_received_ = false;
 									state_ = Connected;
 			
@@ -2196,8 +2235,9 @@ namespace wiselib
 									// ... and it is enough to trigger DAO updates
 									update_dio( sender, parent_path_cost); 
 								
-									if( state_ == Leaf )
+									if( state_ == Leaf || stop_dio_timer_ )
 									{
+										stop_dio_timer_ = false;
 										dao_received_ = false;
 										state_ = Connected;
 			
@@ -2379,12 +2419,39 @@ namespace wiselib
 			#ifdef ROUTING_RPL_DEBUG
 			char str[43];
 			char str2[43];
-			debug().debug( "RPLRouting: %s Received Unicast DIS from %s, Reset Trickle timer...\n", my_address_.get_address(str), sender.get_address(str2) );
+			debug().debug( "RPLRouting: %s Received DIS from %s, Reset Trickle timer...\n", my_address_.get_address(str), sender.get_address(str2) );
 			#endif
 			//Instead of sending a DIO, reset the timer!
 			//send_dio( sender, dio_reference_number_, NULL );
-			set_current_interval(0);
-			compute_sending_threshold();
+
+			if( sender != preferred_parent_ )
+			{
+				//Send some DIOs quickly
+				send_dio( Radio_IP::BROADCAST_ADDRESS, dio_reference_number_, NULL );
+				timer().template set_timer<self_type, &self_type::more_dio_timer_elapsed>( 100, this, 0 );
+								
+				//reset timer
+				set_current_interval(0);
+				compute_sending_threshold();
+				if( state_ == Leaf )
+				{
+					dao_received_ = false;
+					state_ = Connected;
+			
+					timer().template set_timer<self_type, &self_type::leaf_timer_elapsed>(  current_interval_ + 2500, this, 0 );
+					timer().template set_timer<self_type, &self_type::timer_elapsed>( current_interval_, this, 0 );
+					timer().template set_timer<self_type, &self_type::threshold_timer_elapsed>( sending_threshold_, this, 0 );
+
+				}
+			}
+			else
+			{
+				//delay reset of timer (check Leaf when timer is expired)
+				timer().template set_timer<self_type, &self_type::delayed_restart_timer_elapsed>( 2000, this, 0 );
+			}
+
+
+			
 			if( state_ == Leaf )
 			{
 				dao_received_ = false;
