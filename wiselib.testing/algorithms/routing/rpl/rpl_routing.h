@@ -2533,8 +2533,9 @@ namespace wiselib
 						return;				
 						
 					}
-		
-					else if ( seq_nr < it->second.seq_nr )
+
+							
+					else if( seq_nr < it->second.seq_nr )
 					{
 						//Old DAO message, suppress
 						//it doesn't apply for NO-PATH DAOs, that's perfect
@@ -2550,6 +2551,11 @@ namespace wiselib
 				}
 				else
 				{
+					if( target == my_global_address_ )
+					{
+						packet_pool_mgr_->clean_packet( message );
+						return;
+					}
 					if ( data[49] == 0 )
 					{
 						debug().debug( "\nRPL Routing: %s Received NO-PATH with target %s, next hop %s\n", my_address_.get_address(str), target.get_address(str2), sender.get_address(str3) );
@@ -3871,20 +3877,22 @@ namespace wiselib
 
 						if( state_ != Dodag_root )
 						{
-							//Local Repair
-							send_no_path_dao( my_global_address_ );
 
-							rank_ = INFINITE_RANK;
+							//THINK ABOUT IT!! (REMEMBER)
+							//Local Repair
+							//send_no_path_dao( my_global_address_ );
+
+							//rank_ = INFINITE_RANK;
 
 							//update the field in the DIO message!
 		
-							stop_dio_timer_ = true;
+							//stop_dio_timer_ = true;
 	
 							//This message may be lost in the network
-							send_dio( Radio_IP::BROADCAST_ADDRESS, dio_reference_number_, NULL );
+							//send_dio( Radio_IP::BROADCAST_ADDRESS, dio_reference_number_, NULL );
 
 							//Is this necessary? This node will eventually receives DIOs from Neighbors without sending any solicitation! 	
-							send_dis( Radio_IP::BROADCAST_ADDRESS, dis_reference_number_, NULL );
+							//send_dis( Radio_IP::BROADCAST_ADDRESS, dis_reference_number_, NULL );
 		
 						}
 						else{
@@ -3900,8 +3908,7 @@ namespace wiselib
 						}
 						
 						//DON'T DROP IT, This is the destination... but anyway advertise nodes!
-						//DO IT (REMEMBER)
-						return Radio_IP::DROP_PACKET;
+						return Radio_IP::CORRECT;
 					}
 					else
 					{	
@@ -4376,18 +4383,19 @@ namespace wiselib
 
 							if( state_ != Dodag_root )
 							{
+								//THINK ABOUT IT!! (REMEMBER)
 								//Local Repair
-								send_no_path_dao( my_global_address_ );
+								//send_no_path_dao( my_global_address_ );
 
-								rank_ = INFINITE_RANK;
+								//rank_ = INFINITE_RANK;
 		
-								stop_dio_timer_ = true;
+								//stop_dio_timer_ = true;
 	
 								//This message may be lost in the network
-								send_dio( Radio_IP::BROADCAST_ADDRESS, dio_reference_number_, NULL );
+								//send_dio( Radio_IP::BROADCAST_ADDRESS, dio_reference_number_, NULL );
 
 								//Is this necessary? This node will eventually receives DIOs from Neighbors without sending any solicitation! 	
-								send_dis( Radio_IP::BROADCAST_ADDRESS, dis_reference_number_, NULL );
+								//send_dis( Radio_IP::BROADCAST_ADDRESS, dis_reference_number_, NULL );
 		
 							}
 							else{
