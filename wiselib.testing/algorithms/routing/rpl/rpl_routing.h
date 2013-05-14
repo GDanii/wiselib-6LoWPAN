@@ -26,6 +26,8 @@
 
 #include "util/base_classes/routing_base.h"
 #include "algorithms/6lowpan/ipv6_packet_pool_manager.h"
+#include "algorithms/routing/rpl/etx_computation.h"
+#include "algorithms/routing/rpl/rpl_config.h"
 
 #include "util/pstl/map_static_vector.h"
 
@@ -100,7 +102,7 @@ namespace wiselib
 		typedef RPLRouting<OsModel, Radio_IP, Radio, Debug, Timer, Clock> self_type;
 		typedef self_type* self_pointer_t;
 
-		typedef NDStorage<Radio, Debug> NDStorage_t;
+		//typedef NDStorage<Radio, Debug> NDStorage_t;
 		
 		typedef wiselib::IPv6PacketPoolManager<OsModel, Radio, Debug> Packet_Pool_Mgr_t;
 		typedef typename Packet_Pool_Mgr_t::Packet IPv6Packet_t;
@@ -114,39 +116,20 @@ namespace wiselib
 		
 		typedef typename Radio::node_id_t link_layer_node_id_t;
 
-		//typedef typename Timer::millis_t millis_t;
-
-		typedef MapStaticVector<OsModel, node_id_t, uint8_t, 20> Neighbors;
-		typedef wiselib::pair<node_id_t, uint8_t> n_pair_t;
-		typedef typename wiselib::MapStaticVector<OsModel, node_id_t, uint8_t, 20>::iterator Neighbors_iterator;
+		typedef typename Timer::millis_t millis_t;
 
 		struct Mapped_erase_node
 		{
 			node_id_t node;
 		};
 
-		typedef vector_static<OsModel, Mapped_erase_node, 20> Erase_list;
-		typedef typename wiselib::vector_static<OsModel, Mapped_erase_node, 20>::iterator Erase_list_iterator;
-
 		typedef vector_static<OsModel, Mapped_erase_node, PARENT_SET_SIZE> Erase_parent_list;
 		typedef typename wiselib::vector_static<OsModel, Mapped_erase_node, PARENT_SET_SIZE>::iterator Erase_parent_list_iterator;
-				
-		struct Mapped_neighbor_set
-		{
-			bool bidirectionality;
-			bool etx_received;
-			uint8_t etx_forward;
-			uint8_t etx_reverse;
-		};
-
-		typedef MapStaticVector<OsModel, node_id_t, Mapped_neighbor_set, 20> NeighborSet; 
-		typedef wiselib::pair<node_id_t, Mapped_neighbor_set> neigh_pair_t;
-		typedef typename wiselib::MapStaticVector<OsModel , node_id_t, Mapped_neighbor_set, 20>::iterator NeighborSet_iterator;
-
-		typedef MapStaticVector<OsModel, node_id_t, uint8_t, 20> NeighborTempETX; 
-		typedef wiselib::pair<node_id_t, uint8_t> temp_pair_t;
-		typedef typename wiselib::MapStaticVector<OsModel , node_id_t, uint8_t, 20>::iterator NeighborTempETX_iterator;
-
+		
+		typedef MapStaticVector<OsModel, node_id_t, uint16_t, 20> NeighborSet; 
+		typedef wiselib::pair<node_id_t, uint16_t> neigh_pair_t;
+		typedef typename wiselib::MapStaticVector<OsModel , node_id_t, uint16_t, 20>::iterator NeighborSet_iterator;
+		
 		//Parent Set is the set of the candidate neighbors of RFC 6719
 		struct Mapped_parent_set
 		{
@@ -162,19 +145,15 @@ namespace wiselib
 		typedef wiselib::pair<node_id_t,  Mapped_parent_set> pair_t;
 		typedef typename wiselib::MapStaticVector<OsModel , node_id_t,  Mapped_parent_set, PARENT_SET_SIZE>::iterator ParentSet_iterator;
 	
-		//Non-Storing Mode
-		/* 
-		typedef MapStaticVector<OsModel , node_id_t, node_id_t, 30> TransitTable; //Maintaned by the root in Non-storing mode
-		typedef wiselib::pair<node_id_t, node_id_t> rt_pair_t;
-		typedef typename wiselib::MapStaticVector<OsModel , node_id_t, node_id_t, 30>::iterator TransitTable_iterator;
-		*/		
-				
 		typedef wiselib::ForwardingTableValue<Radio_IP> Forwarding_table_value;
 		typedef wiselib::pair<node_id_t, Forwarding_table_value> ft_pair_t;
 
 		typedef typename Radio_IP::Routing_t::ForwardingTable::iterator ForwardingTableIterator;
-			
 
+		//try
+		typedef wiselib::ETX_computation<OsModel, Radio_IP, Radio, Debug, Timer> ETX_computation_t;
+		typedef typename ETX_computation_t::ETX_values_iterator ETX_values_iterator;
+		
 		/**
 		* Enumeration of the ICMPv6 message code types
 		*/
@@ -273,14 +252,16 @@ namespace wiselib
 		~RPLRouting();
 		///@}
 		
-		int init( Radio_IP& radio_ip, Radio& radio, Debug& debug, Timer& timer, Clock& clock, Packet_Pool_Mgr_t* p_mgr )
+		int init( Radio_IP& radio_ip, Radio& radio, Debug& debug, Timer& timer, Clock& clock, Packet_Pool_Mgr_t* p_mgr)
 		{
+			
 			radio_ip_ = &radio_ip;
 			radio_ = &radio;
 			debug_ = &debug;
 			timer_ = &timer;
 			clock_ = &clock;
 			packet_pool_mgr_ = p_mgr;
+			etx_computation_.init( *radio_ip_, *radio_, *debug_, *timer_, *packet_pool_mgr_ );
 			return SUCCESS;
 		}
 
@@ -356,6 +337,8 @@ namespace wiselib
 		void threshold_timer_elapsed( void *userdata );
 
 		void leaf_timer_elapsed( void* userdata );
+
+		void metric_timer_elapsed( void* userdata );
 	
 		void floating_timer_elapsed( void *userdata );
 
@@ -363,8 +346,6 @@ namespace wiselib
 
 		void ETX_timer_elapsed( void *userdata );
 		
-		void periodic_bcast_elapsed( void* userdata );
-
 		void no_path_timer_elapsed( void* userdata );
 
 		void transient_parent_timer_elapsed( void* userdata );
@@ -373,11 +354,9 @@ namespace wiselib
 
 		void delayed_restart_timer_elapsed( void* userdata );
 			
-		void trigger_ETX_computation( uint8_t *addr );
-
 		void first_dio( node_id_t from, block_data_t *data, uint16_t length );
 
-		void set_dodag_root( bool root, uint16_t ocp );
+		void set_dodag_root( bool root );
 
 		uint8_t dio_packet_initialization( uint8_t position, bool grounded );
 
@@ -397,13 +376,11 @@ namespace wiselib
 	
 		void send_no_path_dao( node_id_t target );
 
-		void periodic_bcast();
-
 		uint8_t start();
 		
 		void start2( void *userdata );
 
-		bool scan_neighbor( node_id_t from );
+		bool is_reachable( node_id_t node );
 
 		bool is_still_neighbor( node_id_t node );
 
@@ -419,8 +396,6 @@ namespace wiselib
 		
 		void print_neighbor_set();
 
-		void print_neighbors();		
-	
 		time_t time()
 		{
 			return clock().time();
@@ -436,7 +411,6 @@ namespace wiselib
 			return clock().milliseconds( t );
  		}
 		
-
 		void set_current_interval( uint8_t num )
 		{				
 			if (num == 0)
@@ -511,19 +485,15 @@ namespace wiselib
 		
 		typename Debug::self_pointer_t debug_;
 		typename Clock::self_pointer_t clock_; 
-		
+				
 		Packet_Pool_Mgr_t* packet_pool_mgr_;
-
-		NDStorage_t* act_nd_storage;
 
 		/**
 		* Callback ID
 		*/
-		int callback_id_;
-
+		uint8_t callback_id_;
+		
 		uint8_t TLV_callback_id_;
-
-		//Uart::self_pointer_t uart_;
 
 		//To update
 		enum RPLRoutingState
@@ -540,13 +510,11 @@ namespace wiselib
 		
 		uint8_t hop_limit_; //to use if there's a HOP_COUNT constraint
 		
-		Neighbors neighbors_;
-
-		Erase_list erase_list_;
+		//Neighbors neighbors_;
 
 		NeighborSet neighbor_set_;
 
-		NeighborTempETX neighbor_temp_ETX_;
+		ETX_computation_t etx_computation_;
 
 		Erase_parent_list erase_parent_list_;
 
@@ -576,7 +544,6 @@ namespace wiselib
 		node_id_t worst_parent_;
 		 
 		uint8_t dtsn_;
-		//bool stop_timers_; //used to stop the old timer and start the new one (see timer_elapsed function)
 
 		bool stop_dio_timer_;
 
@@ -770,7 +737,7 @@ namespace wiselib
 		{
 			#ifdef ROUTING_RPL_DEBUG
 			char str[43];
-			debug().debug( "RPLRouting: %s NO FREE PACKET\n", my_address_.get_address(str) );
+			debug().debug( "RPLRouting: %s NO FREE PACKET DIO\n", my_address_.get_address(str) );
 			#endif
 			return ERR_UNSPEC;
 		}
@@ -779,7 +746,7 @@ namespace wiselib
 		{
 			#ifdef ROUTING_RPL_DEBUG
 			char str[43];
-			debug().debug( "RPLRouting: %s NO FREE PACKET\n", my_address_.get_address(str) );
+			debug().debug( "RPLRouting: %s NO FREE PACKET DIS\n", my_address_.get_address(str) );
 			#endif
 			return ERR_UNSPEC;
 		}
@@ -789,7 +756,7 @@ namespace wiselib
 		{
 			#ifdef ROUTING_RPL_DEBUG
 			char str[43];
-			debug().debug( "RPLRouting: %s NO FREE PACKET\n", my_address_.get_address(str) );
+			debug().debug( "RPLRouting: %s NO FREE PACKET DAO\n", my_address_.get_address(str) );
 			#endif
 			return ERR_UNSPEC;
 		}
@@ -799,7 +766,7 @@ namespace wiselib
 		{
 			#ifdef ROUTING_RPL_DEBUG
 			char str[43];
-			debug().debug( "RPLRouting: %s NO FREE PACKET\n", my_address_.get_address(str) );
+			debug().debug( "RPLRouting: %s NO FREE PACKET NO_PATH\n", my_address_.get_address(str) );
 			#endif
 			return ERR_UNSPEC;
 		}
@@ -816,8 +783,10 @@ namespace wiselib
 
 		my_address_ = radio_ip().id(); //ok
 
-		periodic_bcast();
-		
+		#ifdef ETX_METRIC
+		etx_computation_.start();
+		#endif
+				
 		return SUCCESS;
 	}
 	// -----------------------------------------------------------------------
@@ -841,7 +810,11 @@ namespace wiselib
 		radio_ip().template unreg_recv_callback(callback_id_);
 
 		radio_ip().template unreg_recv_callback(TLV_callback_id_);
-		
+
+		#ifdef ETX_METRIC
+		etx_computation_.stop();
+		#endif
+
 		return SUCCESS;
 	}
 	// -----------------------------------------------------------------------
@@ -853,7 +826,7 @@ namespace wiselib
 		typename Clock_P>
 	void
 	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
-	set_dodag_root( bool root, uint16_t ocp = 0 )
+	set_dodag_root( bool root )
 	{
 		if ( root )
 		{
@@ -873,21 +846,28 @@ namespace wiselib
 
 			state_ = Dodag_root;
 			
-			if( etx_ )
-			{
-				min_hop_rank_increase_ = 128;
-				rank_ = min_hop_rank_increase_;
-				#ifdef ROUTING_RPL_DEBUG
-				debug().debug( "RPLRouting: Root, set rank:  %i\n", rank_ );
-				#endif
-				
-			}
+			#ifdef ETX_METRIC
+			min_hop_rank_increase_ = 128;
+			#endif	
+					
+			rank_ = min_hop_rank_increase_; //RFC6550 (pag.112 Section 17)
+
+			#ifdef ROUTING_RPL_DEBUG
+			debug().debug( "RPLRouting: Root, set rank:  %i\n", rank_ );
+			#endif
 			
-			else
-				rank_ = min_hop_rank_increase_; //RFC6550 (pag.112 Section 17)
-			ocp_ = ocp;
-			mop_ = 2; //Storing-mode
-			
+			#ifdef OF0_ACTIVATED
+			ocp_ = OF0;
+			#endif
+			#ifdef MRHOF_ACTIVATED
+			ocp_ = MRHOF;
+			#endif
+			#ifdef STORING_MODE
+			mop_ = 2;
+			#endif
+			#ifdef NONSTORING_MODE
+			mop_ = 1
+			#endif		
 		}
 		else
 			state_ = Unconnected;
@@ -904,6 +884,7 @@ namespace wiselib
 	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
 	start( void )
 	{
+		
 		//NB: the set_payload function starts to fill the packet fields from the 40th byte (the ICMP header)
 		uint8_t setter_byte = RPL_CONTROL_MESSAGE;
 		dio_message_->template set_payload<uint8_t>( &setter_byte, 0, 1 );
@@ -926,7 +907,7 @@ namespace wiselib
 		dis_count_ = 0;
 	
 		
-		timer().template set_timer<self_type, &self_type::start2>( 4000, this, 0 );
+		timer().template set_timer<self_type, &self_type::start2>( 12000, this, 0 );
 		
 		return SUCCESS;
 	}
@@ -942,55 +923,28 @@ namespace wiselib
 	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
 	start2( void* userdata )
 	{	
-		
-		if( !neighbors_found_ )
+		for (ETX_values_iterator it = etx_computation_.etx_values_.begin(); it != etx_computation_.etx_values_.end(); it++) 
 		{
-			//set timer in order for nodes to wait the protocol to compute ETX values
-			for( Neighbors_iterator it = neighbors_.begin(); it != neighbors_.end(); it++)
+			float forward = ((float)it->second.forward)/etx_computation_.timer_count_;
+			float reverse = ((float)it->second.reverse)/etx_computation_.timer_count_;
+			
+			uint16_t current_metric = (uint16_t)( min_hop_rank_increase_ * (1/(forward * reverse)) );
+
+			uint16_t remainder = (uint16_t)current_metric % 128;
+			if( remainder != 0 )
 			{
-				Mapped_neighbor_set map;
-				map.bidirectionality = false;
-				map.etx_received = false;
-				map.etx_forward = 255;
-				map.etx_reverse = 255;
-				neighbor_set_.insert( neigh_pair_t( it->first, map ) );
-				neighbor_temp_ETX_.insert( temp_pair_t( it->first, 0 ) );
-				trigger_ETX_computation( it->first.addr );
-			}
-			timer().template set_timer<self_type, &self_type::start2>( 10000, this, 0 );
-			neighbors_found_ = true;
-			return;
-		}
-		else
-		{
-			erase_list_.clear();
-			//delete 255-entries
-			for( NeighborSet_iterator it = neighbor_set_.begin(); it != neighbor_set_.end(); it++)
-			{
-				if( it->second.etx_forward == 255 || it->second.etx_reverse == 255 )
-				{
-					Mapped_erase_node map;
-					map.node = it->first;
-					erase_list_.push_back( map );
-				}
+				//fix the approximation error
+				if( remainder > 63 )
+					current_metric = current_metric + (128 - remainder);
 				else
-				{
-					#ifdef ROUTING_RPL_DEBUG
-					char str[43];
-					char str2[43];
-					debug().debug( "\n\n\nRPL Routing: %s NEIGH ENTRY %s: forward %i, reverse %i\n\n", my_address_.get_address( str2 ), it->first.get_address(str), it->second.etx_forward, it->second.etx_reverse );
-					#endif
-
-				}	
+					current_metric = current_metric - remainder;
 			}
 
-			for( Erase_list_iterator it_er = erase_list_.begin(); it_er != erase_list_.end(); it_er++) 
-			{
-				neighbor_set_.erase( it_er->node );
-			}
-
+			neighbor_set_.insert( neigh_pair_t( it->first, current_metric ) );
 		}
-		
+
+		timer().template set_timer<self_type, &self_type::metric_timer_elapsed>( 30000, this, 0 );
+			
 		if ( state_ == Dodag_root )
 		{		
 			stop_dao_timer_ = true;
@@ -1115,6 +1069,7 @@ namespace wiselib
 	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
 	send_dio( node_id_t destination, uint16_t len, block_data_t *data )  
 	{
+		//if the following fields are always the same put all those statement within the initialization functions
 		dio_message_->set_transport_next_header( Radio_IP::ICMPV6 );
 		dio_message_->set_hop_limit(255);
 		
@@ -1169,6 +1124,7 @@ namespace wiselib
 	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
 	send_dis( node_id_t destination, uint16_t len, block_data_t *data )   
 	{
+		//if the following fieal are always the same put all those statement within the initialization functions
 		dis_message_->set_transport_next_header( Radio_IP::ICMPV6 );
 		dis_message_->set_hop_limit(255);
 		
@@ -1225,9 +1181,11 @@ namespace wiselib
 			//Unicast to a potential DODAG parent, see neighbor_set
 			node_id_t dest = Radio_IP::NULL_NODE_ID;
 		
-			for (NeighborSet_iterator it = neighbor_set_.begin(); it != neighbor_set_.end(); it++) 
+			//A link is bidirectional when forward and reverse values are different from 0
+			for (ETX_values_iterator it = etx_computation_.etx_values_.begin(); it != etx_computation_.etx_values_.end(); it++) 
 			{
-				if( it->second.bidirectionality )
+				//Check bidirectionality
+				if( it->second.forward != 0 && it->second.reverse != 0 )
 				{
 					dest = it->first;
 					break;
@@ -1287,12 +1245,10 @@ namespace wiselib
 			compute_sending_threshold();
 				
 			//timer after which I must double the timer value (if I don't detect inconsistencies)
-			timer().template set_timer<self_type, &self_type::timer_elapsed>(
-						current_interval_, this, 0 );
+			timer().template set_timer<self_type, &self_type::timer_elapsed>( current_interval_, this, 0 );
 			
 			//timer after which I need to send the DIO message
-			timer().template set_timer<self_type, &self_type::threshold_timer_elapsed>(
-					sending_threshold_, this, 0 );	
+			timer().template set_timer<self_type, &self_type::threshold_timer_elapsed>( sending_threshold_, this, 0 );	
 			
 			version_last_time_ = version_number_;
 		}
@@ -1309,12 +1265,10 @@ namespace wiselib
 			compute_sending_threshold();
 				
 			//timer after which I must double the timer value (if I don't detect inconsistencies)
-			timer().template set_timer<self_type, &self_type::timer_elapsed>(
-						current_interval_, this, 0 );
+			timer().template set_timer<self_type, &self_type::timer_elapsed>( current_interval_, this, 0 );
 			
 			//timer after which I need to send the DIO message
-			timer().template set_timer<self_type, &self_type::threshold_timer_elapsed>(
-					sending_threshold_, this, 0 );	
+			timer().template set_timer<self_type, &self_type::threshold_timer_elapsed>( sending_threshold_, this, 0 );	
 			
 			version_last_time_ = version_number_;
 			stop_dio_timer_ = false;
@@ -1341,6 +1295,54 @@ namespace wiselib
 		}
 		else
 			more_dio_count_ = 0;
+	}
+
+	// -----------------------------------------------------------------------
+	
+	template<typename OsModel_P,
+		typename Radio_IP_P,
+		typename Radio_P,
+		typename Debug_P,
+		typename Timer_P,
+		typename Clock_P>
+	void
+	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
+	metric_timer_elapsed( void* userdata )
+	{
+		#ifdef ROUTING_RPL_DEBUG
+		char str[43];
+		debug().debug( "\nRPL Routing: Node %s: Metric timer elapsed\n", my_address_.get_address(str) );
+		#endif
+		for (ETX_values_iterator it = etx_computation_.etx_values_.begin(); it != etx_computation_.etx_values_.end(); it++) 
+		{
+			if( it->second.forward != 0 || it->second.reverse != 0 )
+			{
+
+				float forward = ((float)it->second.forward)/etx_computation_.timer_count_;
+				float reverse = ((float)it->second.reverse)/etx_computation_.timer_count_;
+				uint16_t current_metric = (uint16_t)( min_hop_rank_increase_ * (1/(forward * reverse)) );
+				uint16_t remainder = (uint16_t)current_metric % 128;
+				if( remainder != 0 )
+				{
+					//fix the approximation error
+					if( remainder > 63 )
+						current_metric = current_metric + (128 - remainder);
+					else
+						current_metric = current_metric - remainder;
+				}
+
+				NeighborSet_iterator neigh_it = neighbor_set_.find( it->first );
+				
+				if( neigh_it == neighbor_set_.end() )
+					neighbor_set_.insert( neigh_pair_t( it->first, current_metric ) );
+				else
+					neigh_it->second = current_metric;				
+
+			}
+			else
+				neighbor_set_.erase( it->first );
+		}
+		timer().template set_timer<self_type, &self_type::metric_timer_elapsed>( 30000, this, 0 );
 	}
 
 	// -----------------------------------------------------------------------
@@ -1462,42 +1464,7 @@ namespace wiselib
 	}
 
 	// -----------------------------------------------------------------------
-	
-	template<typename OsModel_P,
-		typename Radio_IP_P,
-		typename Radio_P,
-		typename Debug_P,
-		typename Timer_P,
-		typename Clock_P>
-	void
-	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
-	periodic_bcast_elapsed( void* userdata )
-	{
-		if( stop_nd_timer_ )
-			return;
-		erase_list_.clear();
-		//here iterator...
-		for( Neighbors_iterator it = neighbors_.begin(); it != neighbors_.end(); it++) 
-		{
-			if( it->second == 0 )
-			{
-				Mapped_erase_node map;
-				map.node = it->first;
-				erase_list_.push_back( map );
-			}
-			else
-				it->second = it->second - 1;
-		}
-		for( Erase_list_iterator it_er = erase_list_.begin(); it_er != erase_list_.end(); it_er++) 
-		{
-			neighbors_.erase( it_er->node );
-		}
-		
-		periodic_bcast();
-	}
-
-	// -----------------------------------------------------------------------
-		
+			
 	template<typename OsModel_P,
 		typename Radio_IP_P,
 		typename Radio_P,
@@ -1562,54 +1529,13 @@ namespace wiselib
 			#endif
 			
 			//timer after which I must double the timer value (if I don't detect inconsistencies)
-			timer().template set_timer<self_type, &self_type::timer_elapsed>(
-					current_interval_, this, 0 );
+			timer().template set_timer<self_type, &self_type::timer_elapsed>( current_interval_, this, 0 );
 					
 			//timer after which I need to send the DIO message
-			timer().template set_timer<self_type, &self_type::threshold_timer_elapsed>( 
-						sending_threshold_, this, 0 );
+			timer().template set_timer<self_type, &self_type::threshold_timer_elapsed>( sending_threshold_, this, 0 );
 		}
 	}
 	
-	// -----------------------------------------------------------------------
-	
-	template<typename OsModel_P,
-		typename Radio_IP_P,
-		typename Radio_P,
-		typename Debug_P,
-		typename Timer_P,
-		typename Clock_P>
-	void
-	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
-	ETX_timer_elapsed( void *userdata )
-	{
-		uint8_t addr[16];
-
-		memcpy(addr, (uint8_t*)(userdata) ,16);
-		
-		node_id_t neigh;
-		neigh.set_address(addr);
-
-		#ifdef ROUTING_RPL_DEBUG
-		char str[43];
-		char str2[43];
-		debug().debug( "\nRPL Routing: %s. ETX timer expired for receiver %s\n", my_address_.get_address(str), neigh.get_address(str2) );
-		#endif
-		
-		NeighborSet_iterator it = neighbor_set_.find( neigh );
-		
-		//....
-		if( ! it->second.bidirectionality )
-		{
-			#ifdef ROUTING_RPL_DEBUG
-			//char str3[43];
-			//char str4[43];
-			debug().debug( "\nRPL Routing: ETX computation again. Node %s, Neighbor %s\n", my_address_.get_address(str), neigh.get_address(str2) );
-			#endif
-			trigger_ETX_computation( it->first.addr );
-		}
-	}
-
 	// -----------------------------------------------------------------------
 	template<typename OsModel_P,
 		typename Radio_IP_P,
@@ -1680,104 +1606,11 @@ namespace wiselib
 		// here	RPL CONTROL MESSAGE processing
 		typecode = data[1];
 
-		//Here managing of link-layer neighbors, since there are problems with the underlying ND
 		if( typecode == OTHERWISE )
 		{
-			uint8_t neigh_msg_type = data[4];
-			if ( neigh_msg_type == 1 )
-			{
-				Neighbors_iterator it = neighbors_.find( sender );
-				if( it == neighbors_.end() )
-					neighbors_.insert( n_pair_t( sender, 3 ) );
-				
-				else
-					it->second = 3;	
-
-				packet_pool_mgr_->clean_packet( message );				
-				return;
-							
-			}
-			else if( neigh_msg_type == 2 )
-			{
-				
-				#ifdef ROUTING_RPL_DEBUG
-				debug().debug( "\nRPL Routing: I'm %s, ETX Request received from %s\n", my_address_.get_address(str), sender.get_address(str2) );
-				#endif
-				
-				//No need timer, the sender will send a message again if it doesn't receive my response
-												
-				NeighborSet_iterator it = neighbor_set_.find( sender );
-				if( it == neighbor_set_.end() )				
-				{	
-					//This happens when the sender woke up while the protocol is aready running!
-					//Add the node in the neighbor set and compute the ETX values for it
-
-					Mapped_neighbor_set map;
-					map.bidirectionality = false;
-					map.etx_received = true;
-					map.etx_forward = 255;
-					map.etx_reverse = data[5];
-					neighbor_set_.insert( neigh_pair_t( sender, map ) );
-					neighbor_temp_ETX_.insert( temp_pair_t( sender, 0 ) );
-					trigger_ETX_computation( sender.addr );
-
-					NeighborSet_iterator it = neighbor_set_.find( sender );
-				}
-			
-				else if( !it->second.etx_received )
-				{
-					
-					it->second.etx_reverse = data[5];
-					it->second.etx_received = true;
-				}
-				else
-				{
-					//ETX alredy received, send back the packet with the old forward value for the sender
-				}
-										
-				message->set_source_address(my_address_);
-						
-				uint8_t setter_byte = 3;
-				message->template set_payload<uint8_t>( &setter_byte, 4, 1 );
-				
-				//In this way I ack the 'forward value' of node 'sender' toward me: My reverse is the forward for the sender
-				setter_byte = it->second.etx_reverse;
-				message->template set_payload<uint8_t>( &setter_byte, 5, 1 );
-				send( sender, packet_number, NULL );
-			}
-			else if( neigh_msg_type == 3 )
-			{
-				//ETX Responses (ACKs), confirmation of the forward value
-				
-				#ifdef ROUTING_RPL_DEBUG
-				debug().debug( "\nRPL Routing: I'm %s, Node %s confirm my forward \n", my_address_.get_address(str), sender.get_address(str2) );
-				#endif
-								
-				NeighborSet_iterator it = neighbor_set_.find( sender );
-				if( it == neighbor_set_.end() )
-				{
-					//It must not happen... or maybe...   //remember
-				}
-				
-				if( !it->second.bidirectionality )
-				{
-					
-					it->second.etx_forward = data[5];
-					it->second.bidirectionality = true;	
-				}
-				else
-				{
-					//My ETX forward alredy acked
-					packet_pool_mgr_->clean_packet( message );
-					return;
-				}
-
-				packet_pool_mgr_->clean_packet( message );
-			
-			}
-			
 			return;
 		}
+		
 		
 		if ( typecode == DODAG_INF_OBJECT && mop_set_ )
 		{
@@ -1973,7 +1806,7 @@ namespace wiselib
 					//The presence of Configuration Option is checked within first_dio
 
 					//Join new version only if the neighbor is reachable (this is done in first DIO)
-					if( ! scan_neighbor( sender ) )
+					if( !is_reachable( sender ) )
 					{
 						packet_pool_mgr_->clean_packet( message );
 						return;				
@@ -2002,50 +1835,25 @@ namespace wiselib
 					}
 					else
 					{
+						
+						NeighborSet_iterator it = neighbor_set_.find( sender );
+						if( it == neighbor_set_.end() )
+						{
+							//Is it Unreachable?
+							#ifdef ROUTING_RPL_DEBUG
+							//debug().debug( "\n\nRPL Routing: (ETX) I'm %s, same version received: ENTRY %s NOT PRESENT!?\n\n", my_address_.get_address(str), sender.get_address(str2) );
+							#endif
+							packet_pool_mgr_->clean_packet( message );
+							return;	
+						}
+				
 						if( etx_ )
 						{
-				
-							NeighborSet_iterator it = neighbor_set_.find( sender );
-							if( it == neighbor_set_.end() )
-							{
-								//Is it Unreachable?
-								#ifdef ROUTING_RPL_DEBUG
-								debug().debug( "\n\nRPL Routing: (ETX) I'm %s, same version received: ENTRY %s NOT PRESENT!?\n\n", my_address_.get_address(str), sender.get_address(str2) );
-								#endif
-								packet_pool_mgr_->clean_packet( message );
-								return;	
-							}
-				
-							float forward = 1/((float)it->second.etx_forward);
-							float reverse = 1/((float)it->second.etx_reverse);
-
-							rank_inc = (uint16_t)( min_hop_rank_increase_ * (1/(forward * reverse)) );
-
-							uint16_t remainder = (uint16_t)rank_inc % 128;
-							if( remainder != 0 )
-							{
-								//fix the approximation error
-								if( remainder > 63 )
-									rank_inc = rank_inc + (128 - remainder);
-								else
-									rank_inc = rank_inc - remainder;
-							}
-
+							rank_inc = it->second;
 							parent_path_cost = rank_inc + parent_rank;
-										
 						}
 						else
 						{
-							NeighborSet_iterator it = neighbor_set_.find( sender );
-							if( it == neighbor_set_.end() )
-							{
-								//Is it Unreachable?
-								#ifdef ROUTING_RPL_DEBUG
-								debug().debug( "\n\nRPL Routing: ENTRY NOT PRESENT!!!!??????\n\n" );
-								#endif
-								packet_pool_mgr_->clean_packet( message );
-								return;	
-							}
 							rank_inc = step_of_rank_ * min_hop_rank_increase_; 
 							parent_path_cost = parent_rank + rank_inc;
 						}
@@ -2071,9 +1879,8 @@ namespace wiselib
 					}
 					if (parent_rank < rank_ )
 					{
-						if( ! scan_neighbor( sender ) )
+						if( !is_reachable( sender ) )
 						{
-							//The neighbor is not reachable
 							packet_pool_mgr_->clean_packet( message );
 							return;				
 						}
@@ -2723,7 +2530,7 @@ namespace wiselib
 		}
 		
 		// now check bidirectionality
-		if ( ! scan_neighbor( from ) )
+		if ( ! is_reachable( from ) )
 		{
 			#ifdef ROUTING_RPL_DEBUG
 			debug().debug( "\nRPL Routing: NEIGHBOR %s unreachable.\n", from.get_address(str) );
@@ -3089,7 +2896,6 @@ namespace wiselib
 		{
 			if( etx_ )
 			{
-				
 				NeighborSet_iterator it = neighbor_set_.find( from );
 				if( it == neighbor_set_.end() )
 				{
@@ -3102,25 +2908,12 @@ namespace wiselib
 					return;
 				}
 				
-				float forward = 1/((float)it->second.etx_forward);
-				float reverse = 1/((float)it->second.etx_reverse);
-
-				rank_inc = (uint16_t) ( min_hop_rank_increase_ * (1/(forward * reverse)) );
-
-				uint16_t remainder = (uint16_t)rank_inc % 128;
-				if( remainder != 0 )
-				{
-					//fix the approximation error
-					if( remainder > 63 )
-						rank_inc = rank_inc + (128 - remainder);
-					else
-						rank_inc = rank_inc - remainder;
-				}
+				rank_inc = it->second;
 
 				#ifdef ROUTING_RPL_DEBUG
 				char str[43];
 				
-				debug().debug( "\n\n\nRPL Routing: %s, Rank Increase is %f, forward %f, reverse %f, min_hop %i \n\n", my_address_.get_address(str), rank_inc, forward, reverse, min_hop_rank_increase_ );
+				debug().debug( "\n\n\nRPL Routing: %s, Rank Increase is %f\n\n", my_address_.get_address(str), rank_inc );
 				#endif
 
 				rank_ = rank_inc + parent_rank;
@@ -3351,169 +3144,16 @@ namespace wiselib
 		typename Clock_P>
 	bool
 	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
-	scan_neighbor( node_id_t from )
+	is_reachable( node_id_t node )
 	{
-		NeighborSet_iterator it = neighbor_set_.find( from );
-		if (it == neighbor_set_.end())
-		{
-			/*
-			Mapped_neighbor_set map;
-			//If I receive this message it means that the neighbor has received my request message
-			map.bidirectionality = false; 
-			map.etx_received = false;
-			map.etx_forward = 1;
-			map.etx_reverse = 1;
-			
-			//the node who sent the message is not in the neighbor_set, it cannot be a parent then
-			//Maybe it can be added in both parent and neighbor sets
-			//... but what if later it is not reachable anymore or what if the bidirectionality doesn't apply? 
-			// For now at least it's a candidate neighbor, then add it without bidirectionality
-			//IDEA: check neighbors each time the timer elapses, or after some timer expiration!
-			neighbor_set_.insert ( neigh_pair_t ( from, map ) );
-			#ifdef ROUTING_RPL_DEBUG
-			debug().debug( "\nRPL Routing: NEIGHBOR IS 5 RIGHT NOW\n" );
-			#endif
-			*/
-			return false;
-		}
-			
-		return it->second.bidirectionality;
+		//by checking directly etx_computation is faster
+		ETX_values_iterator it = etx_computation_.etx_values_.find( node );
+		if( it->second.forward == 0 || it->second.reverse == 0 )
+			return false;				
+		return true;
 			
 	}
 
-	// -----------------------------------------------------------------------
-	
-	template<typename OsModel_P,
-		typename Radio_IP_P,
-		typename Radio_P,
-		typename Debug_P,
-		typename Timer_P,
-		typename Clock_P>
-	void
-	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
-	trigger_ETX_computation( uint8_t *addr )
-	{
-		//Currently ETX computed only once
-		node_id_t node;
-		uint8_t node_addr[16];
-		memcpy( node_addr, addr, 16 );
-		node.set_address( node_addr );
-
-		NeighborTempETX_iterator it = neighbor_temp_ETX_.find( node );
-
-		if( it != neighbor_temp_ETX_.end() )
-		{
-			it->second = it->second + 1;
-			if( it->second > 7 )   //to change according to the reliability of the network (see error in 25% drop test )
-			{
-				neighbor_temp_ETX_.erase( node );
-				return;
-			}	
-			else
-			{
-				uint8_t num = packet_pool_mgr_->get_unused_packet_with_number();
-				if( num == Packet_Pool_Mgr_t::NO_FREE_PACKET )
-				{
-					#ifdef ROUTING_RPL_DEBUG
-					char str[43];
-					debug().debug( "RPLRouting: %s Start as ordinary node\n", my_address_.get_address(str) );
-					#endif	
-					return;
-				}
-
-				IPv6Packet_t* message = packet_pool_mgr_->get_packet_pointer( num );
-		
-				uint8_t setter_byte = RPL_CONTROL_MESSAGE;
-				message->template set_payload<uint8_t>( &setter_byte, 0, 1 ); 
-		
-				setter_byte = OTHERWISE;
-				message->template set_payload<uint8_t>( &setter_byte, 1, 1 );
-
-				setter_byte = 2; //1 for 1st BROADCAST, 2 For ETX computation, 3 for ETX computation response
-				message->template set_payload<uint8_t>( &setter_byte, 4, 1 );
-		
-				//temporary forward value
-				setter_byte = it->second;
-				message->template set_payload<uint8_t>( &setter_byte, 5, 1 );
-		
-				//don't need this
-				setter_byte = 0;
-				message->template set_payload<uint8_t>( &setter_byte, 6, 1 );
-		
-				message->set_transport_length( 7 ); 
-		
-				message->set_transport_next_header( Radio_IP::ICMPV6 );
-				message->set_hop_limit(255);
-				
-				message->set_source_address(my_address_);
-
-				message->set_flow_label(0);
-				message->set_traffic_class(0);
-
-				send( node, num, NULL );
-
-				//the timer must be greater than the RTT
-				timer().template set_timer<self_type, &self_type::ETX_timer_elapsed>( 1500, this, addr );
-				
-			}
-		}
-		else
-			return;
-	}
-
-	// -----------------------------------------------------------------------
-	
-	template<typename OsModel_P,
-		typename Radio_IP_P,
-		typename Radio_P,
-		typename Debug_P,
-		typename Timer_P,
-		typename Clock_P>
-	void
-	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
-	periodic_bcast()
-	{
-		if( stop_nd_timer_ )
-			return;
-		uint8_t num = packet_pool_mgr_->get_unused_packet_with_number();
-
-		if( num == Packet_Pool_Mgr_t::NO_FREE_PACKET )
-		{
-			#ifdef ROUTING_RPL_DEBUG
-			char str[43];
-			debug().debug( "RPLRouting: %s Start as ordinary node\n", my_address_.get_address(str) );
-			#endif	
-			return;
-		}
-		IPv6Packet_t* message = packet_pool_mgr_->get_packet_pointer( num );			
-
-		
-		uint8_t setter_byte = RPL_CONTROL_MESSAGE;
-		message->template set_payload<uint8_t>( &setter_byte, 0, 1 ); 
-		
-		
-		setter_byte = OTHERWISE;
-		message->template set_payload<uint8_t>( &setter_byte, 1, 1 );
-
-		setter_byte = 1; //1 for 1st BROADCAST, 2 For Unicast ETX request, 3 for Unicast ETX response
-		message->template set_payload<uint8_t>( &setter_byte, 4, 1 );
-
-		message->set_transport_length( 7 ); 
-		
-		message->set_transport_next_header( Radio_IP::ICMPV6 );
-		message->set_hop_limit(255);
-				
-		message->set_source_address(my_address_);
-
-		message->set_flow_label(0);
-		message->set_traffic_class(0);
-
-		send( Radio_IP::BROADCAST_ADDRESS, num, NULL );
-		
-		timer().template set_timer<self_type, &self_type::periodic_bcast_elapsed>( 2200, this, 0 );
-
-	}
-	
 	// -----------------------------------------------------------------------
 	
 	template<typename OsModel_P,
@@ -3928,7 +3568,7 @@ namespace wiselib
 					send_dis( dodag_id_, dis_reference_number_, NULL );
 					
 				}
-				print_neighbors();
+				
 				print_neighbor_set();
 				print_parent_set();
 				radio_ip().routing_.print_forwarding_table();
@@ -3979,7 +3619,7 @@ namespace wiselib
 
 					//CHECK REACHABILITY OF NEXT HOP THROUGH NEIGHBOR DISCOVERY ENTRIES
 					//If not reacheble send no-path DAO and delete entry
-					if( !is_still_neighbor( it->second.next_hop ) )
+					if( !is_reachable( it->second.next_hop ) )
 					{
 						//send No-path DAO specifying the target! Or the next hop?
 						send_no_path_dao( destination );
@@ -4011,12 +3651,12 @@ namespace wiselib
 										
 					//CHECK REACHABILITY OF PREFERRED PARENT THROUGH NEIGHBOR DISCOVERY ENTRIES
 					//It makes no sense to send a no-path DAO since the receiver should be the sleeping node 
-					if( !is_still_neighbor( preferred_parent_ ) )
+					if( !is_reachable( preferred_parent_ ) )
 					{
 						//find a new preferred parent...
 
 						parent_set_.erase( preferred_parent_ );
-						neighbor_set_.erase( preferred_parent_ );
+						//neighbor_set_.erase( preferred_parent_ );
 
 						#ifdef ROUTING_RPL_DEBUG
 						debug().debug( "\nRPLRouting: Preferred Parent Unreachable: FINDING NEW PREFERRED PARENT\n" );
@@ -4116,7 +3756,7 @@ namespace wiselib
 					data_pointer[2] = 0;
 					
 				}
-				print_neighbors();
+				//print_neighbors();
 				print_neighbor_set();
 				print_parent_set();
 				radio_ip().routing_.print_forwarding_table();
@@ -4167,7 +3807,7 @@ namespace wiselib
 							debug().debug( "\nRPL Routing: 1st INTERMEDIATE NODE %s, FT contains destination %s, next hop is %s\n", my_global_address_.get_address(str), destination.get_address(str2), it->second.next_hop.get_address(str3) );
 							#endif
 							//CHECK REACHABILITY OF NEXT HOP
-							if( !is_still_neighbor( it->second.next_hop ) )
+							if( !is_reachable( it->second.next_hop ) )
 							{
 								#ifdef ROUTING_RPL_DEBUG
 								debug().debug( "\nRPL Routing: Destination unreachable. Sending No-Path DAO upwards.\n");
@@ -4183,7 +3823,7 @@ namespace wiselib
 							//SET DOWN BIT = 1, RANK ERROR = 0 (first hop), Forwarding error = 0 : 2^7 = 128
 							data_pointer[2] = 128;
 						}
-						print_neighbors();
+					
 						print_neighbor_set();
 						print_parent_set();
 						radio_ip().routing_.print_forwarding_table();
@@ -4241,12 +3881,12 @@ namespace wiselib
 
 							//CHECK REACHABILITY OF PREFERRED PARENT THROUGH NEIGHBOR DISCOVERY ENTRIES
 							//It makes no sense to send a no-path DAO since the receiver should be the sleeping node 
-							if( !is_still_neighbor( preferred_parent_ ) )
+							if( !is_reachable( preferred_parent_ ) )
 							{
 								//find a new preferred parent...
 
 								parent_set_.erase( preferred_parent_ );
-								neighbor_set_.erase( preferred_parent_ );
+								//neighbor_set_.erase( preferred_parent_ );
 
 								#ifdef ROUTING_RPL_DEBUG
 								debug().debug( "\nRPLRouting: Preferred Parent Unreachable: FINDING NEW PREFERRED PARENT\n" );
@@ -4356,7 +3996,7 @@ namespace wiselib
 							}
 
 
-							print_neighbors();
+							//print_neighbors();
 							print_neighbor_set();
 							print_parent_set();
 							radio_ip().routing_.print_forwarding_table();
@@ -4443,7 +4083,7 @@ namespace wiselib
 							debug().debug( "\nRPL Routing: INTERMEDIATE NODE %s, FT contains destination %s, next hop is %s\n", my_global_address_.get_address(str), destination.get_address(str2), it->second.next_hop.get_address(str3) );
 							#endif
 							//CHECK REACHABILITY OF NEXT HOP
-							if( !is_still_neighbor( it->second.next_hop ) )
+							if( !is_reachable( it->second.next_hop ) )
 							{
 								#ifdef ROUTING_RPL_DEBUG
 								debug().debug( "\nRPL Routing: Destination unreachable. Sending No-Path DAO upwards.\n");
@@ -4491,7 +4131,7 @@ namespace wiselib
 								debug().debug( "\nRPL Routing: INTERMEDIATE NODE %s, FT contains destination %s, next hop is %s, CHANGE DIRECTION\n", my_global_address_.get_address(str), destination.get_address(str2), it->second.next_hop.get_address(str3) );
 								#endif
 								//CHECK REACHABILITY OF NEXT HOP
-								if( !is_still_neighbor( it->second.next_hop ) )
+								if( !is_reachable( it->second.next_hop ) )
 								{
 									#ifdef ROUTING_RPL_DEBUG
 									debug().debug( "\nRPL Routing: Destination unreachable. Sending No-Path DAO upwards.\n");
@@ -4514,7 +4154,7 @@ namespace wiselib
 						}
 						data_pointer[4] = (uint8_t) (rank_ >> 8 );
 						data_pointer[5] = (uint8_t) (rank_ );
-						print_neighbors();
+					
 						print_neighbor_set();
 						print_parent_set();
 						radio_ip().routing_.print_forwarding_table();
@@ -4531,7 +4171,7 @@ namespace wiselib
 							//CANNOT GO UP AGAIN, I'M THE ROOT
 							//DESTINATION UNREACHABLE... WHAT SHOULD I DO? Just wait for DAO updates
 							//... DAO update will be eventually received
-							print_neighbors();
+							//print_neighbors();
 							print_neighbor_set();
 							print_parent_set();
 							radio_ip().routing_.print_forwarding_table();
@@ -4564,12 +4204,12 @@ namespace wiselib
 
 						//CHECK REACHABILITY OF PREFERRED PARENT THROUGH NEIGHBOR DISCOVERY ENTRIES
 						//It makes no sense to send a no-path DAO since the receiver should be the sleeping node 
-						if( !is_still_neighbor( preferred_parent_ ) )
+						if( !is_reachable( preferred_parent_ ) )
 						{
 							//find a new preferred parent...
 
 							parent_set_.erase( preferred_parent_ );
-							neighbor_set_.erase( preferred_parent_ );
+							//neighbor_set_.erase( preferred_parent_ );
 
 							#ifdef ROUTING_RPL_DEBUG
 							debug().debug( "\nRPLRouting: Preferred Parent Unreachable: FINDING NEW PREFERRED PARENT\n" );
@@ -4662,7 +4302,7 @@ namespace wiselib
 						
 						data_pointer[4] = (uint8_t) (rank_ >> 8 );
 						data_pointer[5] = (uint8_t) (rank_ );
-						print_neighbors();
+						
 						print_neighbor_set();
 						print_parent_set();
 						radio_ip().routing_.print_forwarding_table();
@@ -4672,25 +4312,7 @@ namespace wiselib
 			}
 		}
 	}
-
-	// -----------------------------------------------------------------------
-	template<typename OsModel_P,
-		typename Radio_IP_P,
-		typename Radio_P,
-		typename Debug_P,
-		typename Timer_P,
-		typename Clock_P>
-	bool
-	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
-	is_still_neighbor( node_id_t node )
-	{
-		Neighbors_iterator it_nd = neighbors_.find( node );
-		if( it_nd == neighbors_.end() )
-			return false;
-		else
-			return true;
-	}
-
+	
 	// -----------------------------------------------------------------------
 	template<typename OsModel_P,
 		typename Radio_IP_P,
@@ -4734,34 +4356,9 @@ namespace wiselib
 		debug().debug( "\nRPL Routing: Node %s, Neighbor Set: \n", my_address_.get_address(str));
 		#endif
 		int i = 0;
-		for( NeighborSet_iterator it = neighbor_set_.begin(); it != neighbor_set_.end(); it++ )
-		{
-			char str2[43];
-			#ifdef ROUTING_RPL_DEBUG
-			debug().debug( "\n %i: %s ", i, it->first.get_address(str2));
-			#endif
-			i = i + 1;
-		}
-		debug().debug( "\n\n" );
-	}
 
-	// -----------------------------------------------------------------------
-	template<typename OsModel_P,
-		typename Radio_IP_P,
-		typename Radio_P,
-		typename Debug_P,
-		typename Timer_P,
-		typename Clock_P>
-	void
-	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
-	print_neighbors()
-	{
-		char str[43];
-		#ifdef ROUTING_RPL_DEBUG
-		debug().debug( "\nRPL Routing: Node %s, Neighbors found through ND: \n", my_address_.get_address(str));
-		#endif
-		int i = 0;
-		for( Neighbors_iterator it = neighbors_.begin(); it != neighbors_.end(); it++ )
+
+		for (NeighborSet_iterator it = neighbor_set_.begin(); it != neighbor_set_.end(); it++) 
 		{
 			char str2[43];
 			#ifdef ROUTING_RPL_DEBUG
