@@ -99,9 +99,9 @@ namespace wiselib
 		typedef wiselib::IPv6PacketPoolManager<OsModel, Radio, Debug> Packet_Pool_Mgr_t;
 
 		typedef wiselib::NDStorage<Radio, Debug> NDStorage_t;
-
+		#ifdef RPL_CONFIGURED
 		typedef wiselib::RPLRouting<OsModel, IPv6_t, Radio, Debug, Timer, Clock> RPL_t;	
-		
+		#endif
 		enum ErrorCodes
 		{
 			SUCCESS = OsModel::SUCCESS,
@@ -173,10 +173,11 @@ namespace wiselib
 			#ifdef RPL_CONFIGURED
 			//Init RPLRouting
 			rpl.init( ipv6, *radio_, *debug_, *timer_, *clock_, &packet_pool_mgr);
-			
+									
 			//Just register callback, not enable IP radio
 			if( SUCCESS != rpl.enable_radio() )
 				debug_->debug( "Fatal error: RPL protocol enabling failed! " );
+
 			#endif			
 
 		}
@@ -184,8 +185,9 @@ namespace wiselib
 		ICMPv6_t icmpv6; 
 		UDP_t udp;
 		InterfaceManager_t interface_manager;
-
-		RPL_t rpl; //mine
+		#ifdef RPL_CONFIGURED
+		RPL_t rpl;
+		#endif
 		
 	private:
 		typename Radio::self_pointer_t radio_;

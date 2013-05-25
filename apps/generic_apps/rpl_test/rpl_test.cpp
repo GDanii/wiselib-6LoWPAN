@@ -45,7 +45,7 @@ public:
 		ipv6_stack_.init(*radio_, *debug_, *timer_, *uart_, *clock_);
 
 		//Must receive from the UDP layer
-		callback_id = ipv6_stack_.rpl.reg_recv_callback<RPLTest,&RPLTest::receive_RPL_message>( this );
+		//callback_id = ipv6_stack_.rpl.reg_recv_callback<RPLTest,&RPLTest::receive_RPL_message>( this );
 
 		// --------------------------------------------------------------------
 		//TESTING PART
@@ -60,7 +60,7 @@ public:
 		debug_->debug( "Initialized ID: %x\n", radio_->id());
 		
 		if( radio_->id() == root )
-			ipv6_stack_.rpl.set_dodag_root(true, 2);
+			ipv6_stack_.rpl.set_dodag_root(true);
 		else
 			ipv6_stack_.rpl.set_dodag_root(false);
 		
@@ -69,8 +69,8 @@ public:
 		//EXPERIMENT
 		again = true;
 		//now start timer after which the application can send data packets
-		timer_->set_timer<RPLTest, &RPLTest::send_data>( 22000, this, 0 );
-		timer_->set_timer<RPLTest, &RPLTest::terminate>( 46000, this, 0 );
+		//timer_->set_timer<RPLTest, &RPLTest::send_data>( 20000, this, 0 );
+		//timer_->set_timer<RPLTest, &RPLTest::terminate>( 40000, this, 0 );
 
 	}
 
