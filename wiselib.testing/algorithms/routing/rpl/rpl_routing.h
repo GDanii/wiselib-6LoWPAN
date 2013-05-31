@@ -260,9 +260,7 @@ namespace wiselib
 			timer_ = &timer;
 			clock_ = &clock;
 			packet_pool_mgr_ = p_mgr;
-			debug_->debug("\nBefore ETX init MEM: %u", mem->mem_free());
 			etx_computation_.init( radio_ip, radio, debug, timer, *packet_pool_mgr_ );
-			debug_->debug("\nAfter ETX init MEM: %u", mem->mem_free());
 			return SUCCESS;
 		}
 
@@ -889,7 +887,7 @@ namespace wiselib
 		dao_received_ = false;
 		dis_count_ = 0;
 	
-		timer().template set_timer<self_type, &self_type::start2>( 7000, this, 0 );
+		timer().template set_timer<self_type, &self_type::start2>( 10000, this, 0 );
 		return SUCCESS;
 	}
 
@@ -920,8 +918,9 @@ namespace wiselib
 				else
 					current_metric = current_metric - remainder;
 			}
-
-			neighbor_set_.insert( neigh_pair_t( it->first, current_metric ) );
+			
+			if( current_metric != 0 )
+				neighbor_set_.insert( neigh_pair_t( it->first, current_metric ) );
 		}
 		print_neighbor_set();
 
@@ -2913,7 +2912,7 @@ namespace wiselib
 
 		#ifdef ROUTING_RPL_DEBUG
 		char str[43];
-		debug().debug( "\n\n\nRPL Routing: %s, Preferred parent %s Set DIO New Rank is : RANK %i\n\n", preferred_parent_.get_address(str), rank_  );
+		debug().debug( "\n\n\nRPL Routing: Preferred parent %s Set DIO New Rank is : RANK %i\n\n", preferred_parent_.get_address(str), rank_ );
 		#endif
 		
 		dio_message_->template set_payload<uint16_t>( &rank_, 6, 1 );
@@ -4328,7 +4327,7 @@ namespace wiselib
 		{
 			char str[43];
 			#ifdef ROUTING_RPL_DEBUG
-			debug().debug( "\n %i: %s ", i, it->first.get_address(str));
+			debug().debug( "\n %i: %s, %i", i, it->first.get_address(str), it->second);
 			#endif
 			i = i + 1;
 		}

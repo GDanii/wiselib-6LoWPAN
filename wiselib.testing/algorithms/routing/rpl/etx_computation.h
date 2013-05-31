@@ -342,14 +342,17 @@ namespace wiselib
 		uint8_t entries = 0;
 		for( ETX_values_iterator it = etx_values_.begin(); it != etx_values_.end(); it++) 
 		{
+			uint8_t addr2[8];
+			memcpy(addr2, &(it->first.addr[8]), 8);
+			
 			//first 4 bytes represent the ICMP-RPL header
-			bcast_message_->template set_payload<uint8_t[16]>( &it->first.addr, 4 + (entries * 16) + entries, 1 );
-			bcast_message_->template set_payload<uint8_t>( &it->second.reverse, 4 + ((entries + 1) * 16) + entries, 1 );
+			bcast_message_->template set_payload<uint8_t[8]>( &addr2, 4 + (entries * 8) + entries, 1 );
+			bcast_message_->template set_payload<uint8_t>( &it->second.reverse, 4 + ((entries + 1) * 8) + entries, 1 );
 			
 			entries = entries + 1;
 		}
 
-		bcast_message_->set_transport_length( 4 + (16 * entries) + entries ); 
+		bcast_message_->set_transport_length( 4 + (8 * entries) + entries ); 
 		bcast_message_->set_transport_next_header( Radio_IP::ICMPV6 );
 		
 
@@ -552,12 +555,14 @@ namespace wiselib
 		{
 			//now for each entry in this packet check if it correspond to this node addess, if so update the forward value
 			uint8_t addr[16];
-			memcpy(addr, data + current_len ,16);
+			addr[0] = 0xfe;
+			addr[1] = 0x80;
+			memcpy(addr + 8, data + current_len, 8);
 			
 			//This address needs to be rearranged (if shawn)
 			#ifdef SHAWN			
-			uint8_t k = 0;
-			for( uint8_t i = 15; i>7; i--)
+			uint8_t k = 8;
+			for( uint8_t i = 15; i>11; i--)
 			{
 				uint8_t temp;
 				temp = addr[i];
@@ -569,7 +574,7 @@ namespace wiselib
 
 			node_id_t address;
 			address.set_address(addr);
-			uint8_t rec_value = data[current_len + 16];
+			uint8_t rec_value = data[current_len + 8];
 			#ifdef ROUTING_RPL_DEBUG
 			//char str[43];
 			//debug().debug( "ETX computation: Received forward value %i of node %s\n", rec_value, address.get_address(str) );
@@ -579,11 +584,11 @@ namespace wiselib
 				//update the forward value
 				ETX_values_iterator it = etx_values_.find( from );
 				if( it != etx_values_.end() )
-					it->second.forward = data[current_len + 16];
+					it->second.forward = data[current_len + 8];
 				else
 				{
 					Mapped_values map2;
-					map2.forward = data[current_len + 16];
+					map2.forward = data[current_len + 8];
 					map2.reverse = 0;
 					etx_values_.insert( values_pair_t( from, map2 ) );
 				}
@@ -593,7 +598,7 @@ namespace wiselib
 			else
 			{
 				//increase current_len
-				current_len = current_len + 17;
+				current_len = current_len + 9;
 			}
 		}
 		packet_pool_mgr_->clean_packet( message );		
