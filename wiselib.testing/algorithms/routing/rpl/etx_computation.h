@@ -64,19 +64,15 @@ namespace wiselib
 		typedef wiselib::IPv6PacketPoolManager<OsModel, Radio, Debug> Packet_Pool_Mgr_t;
 		typedef typename Packet_Pool_Mgr_t::Packet IPv6Packet_t;
 
-		typedef MapStaticVector<OsModel, node_id_t, uint8_t, 20> Neighbors;
-		typedef wiselib::pair<node_id_t, uint8_t> n_pair_t;
-		typedef typename wiselib::MapStaticVector<OsModel, node_id_t, uint8_t, 20>::iterator Neighbors_iterator;
-
 		struct Mapped_timers
 		{
 			uint8_t count;
-			uint8_t timers[10];
+			uint8_t timers[5];
 		};
 				
-		typedef MapStaticVector<OsModel , node_id_t,  Mapped_timers, 10> ETX_count;
+		typedef MapStaticVector<OsModel , node_id_t,  Mapped_timers, 8> ETX_count;
 		typedef wiselib::pair<node_id_t,  Mapped_timers> count_pair_t;
-		typedef typename wiselib::MapStaticVector<OsModel , node_id_t,  Mapped_timers, 10>::iterator ETX_count_iterator;
+		typedef typename wiselib::MapStaticVector<OsModel , node_id_t,  Mapped_timers, 8>::iterator ETX_count_iterator;
 
 		struct Mapped_values
 		{
@@ -85,9 +81,9 @@ namespace wiselib
 			uint8_t count;
 		};
 
-		typedef MapStaticVector<OsModel , node_id_t,  Mapped_values, 10> ETX_values;
+		typedef MapStaticVector<OsModel , node_id_t,  Mapped_values, 8> ETX_values;
 		typedef wiselib::pair<node_id_t,  Mapped_values> values_pair_t;
-		typedef typename wiselib::MapStaticVector<OsModel , node_id_t,  Mapped_values, 10>::iterator ETX_values_iterator;
+		typedef typename wiselib::MapStaticVector<OsModel , node_id_t,  Mapped_values, 8>::iterator ETX_values_iterator;
 
 		/**
 		* Enumeration of the ICMPv6 message code types
@@ -207,11 +203,11 @@ namespace wiselib
 		uint8_t t3;
 		uint8_t t4;
 		uint8_t t5;
-		uint8_t t6;
-		uint8_t t7;
-		uint8_t t8;
-		uint8_t t9;
-		uint8_t t10;
+		//uint8_t t6;
+		//uint8_t t7;
+		//uint8_t t8;
+		//uint8_t t9;
+		//uint8_t t10;
 
 	};
 
@@ -230,11 +226,11 @@ namespace wiselib
 		t3 (3),
 		t4 (4),
 		t5 (5),
-		t6 (6),
-		t7 (7),
-		t8 (8),
-		t9 (9),
-		t10 (10),
+		//t6 (6),
+		//t7 (7),
+		//t8 (8),
+		//t9 (9),
+		//t10 (10),
 		timer_count_ (0)
 	{}
 	
@@ -282,17 +278,13 @@ namespace wiselib
 	ETX_computation<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P>::
 	start( void )
 	{
-		
-		my_address_ = radio_ip().id();
-		
 		#ifdef ROUTING_RPL_DEBUG
-		char str[43];
-		debug().debug( "ETX Computation: Node %s\n", my_address_.get_address(str) );
+		debug().debug( "ETX Computation\n" );
 		#endif
+		my_address_ = radio_ip().id();
 		
 		etx_callback_id_ = radio_ip().template reg_recv_callback<self_type, &self_type::receive>( this );
 
-		
 		//All nodes maintain a reference to a DIO message
 		bcast_reference_number_ = packet_pool_mgr_->get_unused_packet_with_number();
 			
@@ -344,6 +336,7 @@ namespace wiselib
 	{
 		if( stop_timer_ )
 			return;
+		timer().template set_timer<self_type, &self_type::periodic_bcast_elapsed>( 1000, this, 0 );
 		//elapses every 1 second (or more?)
 		//add the payload
 		uint8_t entries = 0;
@@ -359,13 +352,14 @@ namespace wiselib
 		bcast_message_->set_transport_length( 4 + (16 * entries) + entries ); 
 		bcast_message_->set_transport_next_header( Radio_IP::ICMPV6 );
 		
-		radio_ip().send( Radio_IP::BROADCAST_ADDRESS, bcast_reference_number_, NULL );
+
 		
+		radio_ip().send( Radio_IP::BROADCAST_ADDRESS, bcast_reference_number_, NULL );
 		//Each time the timer elapses I update the reverse value, maybe this is too many times... less frequently?
 		for( ETX_count_iterator it = etx_count_.begin(); it != etx_count_.end(); it++) 
 		{
 			uint8_t count_probes = 0;
-			for(int i = 0; i <= 9; i++ )
+			for(int i = 0; i <= 4; i++ )
 				count_probes = count_probes + it->second.timers[i];
 			
 			ETX_values_iterator it2 = etx_values_.find( it->first );
@@ -381,31 +375,31 @@ namespace wiselib
 
 			#ifdef ROUTING_RPL_DEBUG
 			char str[43];
-			char str2[43];
-			//debug().debug( "ETX computation: %s has reverse %i towards %s\n", my_address_.get_address(str), count_probes, it->first.get_address(str2) );
-		#endif
+			//debug().debug( "ETX computation: Reverse %i towards %s\n", count_probes, it->first.get_address(str) );
+			#endif
 			
 		}
-
-		if( timer_count_ < 10 )
+		
+		if( timer_count_ < 5 )
 			timer_count_ = timer_count_ + 1;
 			
-		//Here I trigger a 10 second timer and assign a value to it
-		if( latest_timer_ == 10 )
+		//Here I trigger a 5 second timer and assign a value to it
+		if( latest_timer_ == 5 )
 			latest_timer_ = 1;
 		else
 			latest_timer_ = latest_timer_ + 1;
+
 		if( latest_timer_ == 1 )
-			timer().template set_timer<self_type, &self_type::probes_window_elapsed>( 10000, this, &t1 );
+			timer().template set_timer<self_type, &self_type::probes_window_elapsed>( 5000, this, &t1 );
 		else if( latest_timer_ == 2 )
-			timer().template set_timer<self_type, &self_type::probes_window_elapsed>( 10000, this, &t2 );
+			timer().template set_timer<self_type, &self_type::probes_window_elapsed>( 5000, this, &t2 );
 		else if( latest_timer_ == 3 )
-			timer().template set_timer<self_type, &self_type::probes_window_elapsed>( 10000, this, &t3 );
+			timer().template set_timer<self_type, &self_type::probes_window_elapsed>( 5000, this, &t3 );
 		else if( latest_timer_ == 4 )
-			timer().template set_timer<self_type, &self_type::probes_window_elapsed>( 10000, this, &t4 );
+			timer().template set_timer<self_type, &self_type::probes_window_elapsed>( 5000, this, &t4 );
 		else if( latest_timer_ == 5 )
-			timer().template set_timer<self_type, &self_type::probes_window_elapsed>( 10000, this, &t5 );
-		else if( latest_timer_ == 6 )
+			timer().template set_timer<self_type, &self_type::probes_window_elapsed>( 5000, this, &t5 );
+		/*else if( latest_timer_ == 6 )
 			timer().template set_timer<self_type, &self_type::probes_window_elapsed>( 10000, this, &t6 );
 		else if( latest_timer_ == 7 )
 			timer().template set_timer<self_type, &self_type::probes_window_elapsed>( 10000, this, &t7 );
@@ -415,9 +409,7 @@ namespace wiselib
 			timer().template set_timer<self_type, &self_type::probes_window_elapsed>( 10000, this, &t9 );
 		else if( latest_timer_ == 10 )
 			timer().template set_timer<self_type, &self_type::probes_window_elapsed>( 10000, this, &t10 );
-
-		timer().template set_timer<self_type, &self_type::periodic_bcast_elapsed>( 1000, this, 0 );
-		
+		*/		
 	}
 
 	// -----------------------------------------------------------------------
@@ -436,11 +428,11 @@ namespace wiselib
 		uint8_t num = ((uint8_t*)(userdata))[0];
 
 		#ifdef ROUTING_RPL_DEBUG
-		char str[43];
-		char str2[43];
+		//char str[43];
 		//debug().debug( "ETX computation: %s delete timers %i\n", my_address_.get_address(str), num );
 		#endif
 		//here iterator...
+		
 		for( ETX_count_iterator it = etx_count_.begin(); it != etx_count_.end(); it++) 
 		{
 			if( it->second.timers[ num ] == 1 )
@@ -449,6 +441,7 @@ namespace wiselib
 				it->second.count = it->second.count - 1;
 			}
 		}
+		
 	}
 
 	// -----------------------------------------------------------------------
@@ -492,9 +485,8 @@ namespace wiselib
 			return;
 		
 		#ifdef ROUTING_RPL_DEBUG
-		char str[43];
-		char str2[43];
-		//debug().debug( "ETX computation: %s received a BCAST message from %s\n", my_address_.get_address(str), from.get_address(str2) );
+		//char str[43];
+		//debug().debug( "ETX computation: Received a BCAST message from %s\n", from.get_address(str) );
 		#endif
 		//Manage the reception of messages analyzing the payload which may include the probes sent by this node to the neighbors
 		//This way I can compute the ETX values for each link
@@ -509,11 +501,11 @@ namespace wiselib
 			map.timers[2] = 0;
 			map.timers[3] = 0;
 			map.timers[4] = 0;
-			map.timers[5] = 0;
-			map.timers[6] = 0;
-			map.timers[7] = 0;
-			map.timers[8] = 0;
-			map.timers[9] = 0;
+			//map.timers[5] = 0;
+			//map.timers[6] = 0;
+			//map.timers[7] = 0;
+			//map.timers[8] = 0;
+			//map.timers[9] = 0;
 									
 			etx_count_.insert( count_pair_t( from, map ) );
 			it = etx_count_.find( from );
@@ -535,6 +527,7 @@ namespace wiselib
 			it->second.timers[3] = 1;
 		else if( latest_timer_ == 5 )
 			it->second.timers[4] = 1;
+		/*		
 		else if( latest_timer_ == 6 )
 			it->second.timers[5] = 1;
 		else if( latest_timer_ == 7 )
@@ -545,7 +538,7 @@ namespace wiselib
 			it->second.timers[8] = 1;
 		else if( latest_timer_ == 10 )
 			it->second.timers[9] = 1;
-
+		*/		
 		//now manage probes if they exist! So check the length and work according to it...
 		uint16_t length = message->transport_length();
 		if( length <= 4 )
@@ -560,7 +553,9 @@ namespace wiselib
 			//now for each entry in this packet check if it correspond to this node addess, if so update the forward value
 			uint8_t addr[16];
 			memcpy(addr, data + current_len ,16);
-			//This address needs to be rearranged analyzing it
+			
+			//This address needs to be rearranged (if shawn)
+			#ifdef SHAWN			
 			uint8_t k = 0;
 			for( uint8_t i = 15; i>7; i--)
 			{
@@ -570,9 +565,15 @@ namespace wiselib
 				addr[k] = temp;
 				k++;
 			}
+			#endif
 
 			node_id_t address;
 			address.set_address(addr);
+			uint8_t rec_value = data[current_len + 16];
+			#ifdef ROUTING_RPL_DEBUG
+			//char str[43];
+			//debug().debug( "ETX computation: Received forward value %i of node %s\n", rec_value, address.get_address(str) );
+			#endif
 			if( address == my_address_ )
 			{
 				//update the forward value

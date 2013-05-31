@@ -118,6 +118,7 @@ namespace wiselib
 
 		typedef typename Timer::millis_t millis_t;
 
+
 		struct Mapped_erase_node
 		{
 			node_id_t node;
@@ -126,19 +127,19 @@ namespace wiselib
 		typedef vector_static<OsModel, Mapped_erase_node, PARENT_SET_SIZE> Erase_parent_list;
 		typedef typename wiselib::vector_static<OsModel, Mapped_erase_node, PARENT_SET_SIZE>::iterator Erase_parent_list_iterator;
 		
-		typedef MapStaticVector<OsModel, node_id_t, uint16_t, 20> NeighborSet; 
+		typedef MapStaticVector<OsModel, node_id_t, uint16_t, 8> NeighborSet; 
 		typedef wiselib::pair<node_id_t, uint16_t> neigh_pair_t;
-		typedef typename wiselib::MapStaticVector<OsModel , node_id_t, uint16_t, 20>::iterator NeighborSet_iterator;
+		typedef typename wiselib::MapStaticVector<OsModel , node_id_t, uint16_t, 8>::iterator NeighborSet_iterator;
 		
 		//Parent Set is the set of the candidate neighbors of RFC 6719
 		struct Mapped_parent_set
 		{
-			uint16_t rank;
-			uint16_t path_cost;
 			uint8_t current_version;
 			uint8_t grounded;
 			uint8_t metric_type;
 			uint8_t dtsn;
+			uint16_t rank;
+			uint16_t path_cost;
 		};
 				
 		typedef MapStaticVector<OsModel , node_id_t,  Mapped_parent_set, PARENT_SET_SIZE> ParentSet;
@@ -215,14 +216,16 @@ namespace wiselib
 		// --------------------------------------------------------------------
 		enum RoutingMetricTypes
 		{
+			/*
 			NSA = 1,
 			NODE_ENERGY = 2,
 			HOP_COUNT = 3,
 			LINK_THROUGHPUT = 4,
 			LINK_LATENCY = 5,
 			LINK_QUALITY_LEVEL = 6,
+			*/			
 			LINK_ETX = 7,
-			LINK_COLOR = 8
+			//LINK_COLOR = 8
 		};
 		// --------------------------------------------------------------------
 		enum ErrorCodes
@@ -239,12 +242,8 @@ namespace wiselib
 		/**
 		* All-RPL-nodes multicast address: FF02:0:0:0:0:0:0:1A  TO UPDATE IN IPv6 Class
 		*/
-		static const node_id_t ALL_RPL_NODES_MULTICAST_ADDRESS;
+		//static const node_id_t ALL_RPL_NODES_MULTICAST_ADDRESS;
 
-		// --------------------------------------------------------------------
-		enum Restrictions {
-			MAX_MESSAGE_LENGTH = Radio_IP::MAX_MESSAGE_LENGTH - 4  ///< Maximal number of bytes in payload
-		};
 		// --------------------------------------------------------------------
 		///@name Construction / Destruction
 		///@{
@@ -261,7 +260,9 @@ namespace wiselib
 			timer_ = &timer;
 			clock_ = &clock;
 			packet_pool_mgr_ = p_mgr;
-			etx_computation_.init( *radio_ip_, *radio_, *debug_, *timer_, *packet_pool_mgr_ );
+			debug_->debug("\nBefore ETX init MEM: %u", mem->mem_free());
+			etx_computation_.init( radio_ip, radio, debug, timer, *packet_pool_mgr_ );
+			debug_->debug("\nAfter ETX init MEM: %u", mem->mem_free());
 			return SUCCESS;
 		}
 
@@ -364,7 +365,7 @@ namespace wiselib
 
 		uint8_t add_prefix_information( uint8_t position );
 
-		uint8_t add_hopcount_metric( bool constraint, uint8_t position );
+		//uint8_t add_hopcount_metric( bool constraint, uint8_t position );
 
 		void scan_configuration_option( block_data_t *data, uint16_t length_checked );
 
@@ -396,6 +397,7 @@ namespace wiselib
 		
 		void print_neighbor_set();
 
+		
 		time_t time()
 		{
 			return clock().time();
@@ -410,11 +412,12 @@ namespace wiselib
 		{
 			return clock().milliseconds( t );
  		}
-		
+				
 		void set_current_interval( uint8_t num )
 		{				
 			if (num == 0)
 			{
+				//uint32_t t = 23456;
 				uint32_t t = milliseconds(time()) + 1000*seconds(time());
 				current_interval_ = (t % (imax_ - imin_)) + imin_;
 							
@@ -432,7 +435,7 @@ namespace wiselib
 		
 		void compute_sending_threshold()
 		{
-									
+			//uint32_t t = 23456;					
 			uint32_t t = milliseconds(time()) + 1000*seconds(time());
 			sending_threshold_ = ( t % current_interval_/2) + current_interval_/2;
 			
@@ -601,14 +604,12 @@ namespace wiselib
 		uint8_t imin_;  //2^dio_int_min
 		uint8_t imax_;  // Number of doublings of imin_ to reach the maximum value
 		
-				
 		uint8_t dio_count_;
 
 		uint8_t more_dio_count_;
 
 		uint8_t dao_sequence_;
 		uint8_t path_sequence_;
-
 				
 		uint32_t max_interval_; //depends on imin and imax
 		uint8_t dio_redund_const_;
@@ -620,19 +621,6 @@ namespace wiselib
 		
 	};
 	// -----------------------------------------------------------------------
-	// -----------------------------------------------------------------------
-	// -----------------------------------------------------------------------
-
-	//Initialize ALL_RPL_NODES_MULTICAST_ADDRESS //TO ADD IN THE IPv6 CLASS
-	template<typename OsModel_P,
-		typename Radio_IP_P,
-		typename Radio_P,
-		typename Debug_P,
-		typename Timer_P,
-		typename Clock_P>
-	const
-	typename Radio_IP_P::node_id_t
-	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::ALL_RPL_NODES_MULTICAST_ADDRESS = Radio_IP::ALL_RPL_NODES_MULTICAST_ADDRESS;
 	
 	// -----------------------------------------------------------------------
 	template<typename OsModel_P,
@@ -727,17 +715,15 @@ namespace wiselib
 	enable_radio( void )
 	{
 		#ifdef ROUTING_RPL_DEBUG
-		char str[43];
-		debug().debug( "\nRPL: initialization at %s\n", radio_ip().id().get_address(str));
+		debug().debug( "\nRPL: Initialization\n" );
 		#endif
-		
+			
 		//All nodes maintain a reference to a DIO message
 		dio_reference_number_ = packet_pool_mgr_->get_unused_packet_with_number();
 		if( dio_reference_number_ == Packet_Pool_Mgr_t::NO_FREE_PACKET )
 		{
 			#ifdef ROUTING_RPL_DEBUG
-			char str[43];
-			debug().debug( "RPLRouting: %s NO FREE PACKET DIO\n", my_address_.get_address(str) );
+			debug().debug( "RPLRouting: NO FREE PACKET DIO\n" );
 			#endif
 			return ERR_UNSPEC;
 		}
@@ -745,8 +731,7 @@ namespace wiselib
 		if( dis_reference_number_ == Packet_Pool_Mgr_t::NO_FREE_PACKET )
 		{
 			#ifdef ROUTING_RPL_DEBUG
-			char str[43];
-			debug().debug( "RPLRouting: %s NO FREE PACKET DIS\n", my_address_.get_address(str) );
+			debug().debug( "RPLRouting: NO FREE PACKET DIS\n" );
 			#endif
 			return ERR_UNSPEC;
 		}
@@ -755,8 +740,7 @@ namespace wiselib
 		if( dao_reference_number_ == Packet_Pool_Mgr_t::NO_FREE_PACKET )
 		{
 			#ifdef ROUTING_RPL_DEBUG
-			char str[43];
-			debug().debug( "RPLRouting: %s NO FREE PACKET DAO\n", my_address_.get_address(str) );
+			debug().debug( "RPLRouting: NO FREE PACKET DAO\n" );
 			#endif
 			return ERR_UNSPEC;
 		}
@@ -765,8 +749,7 @@ namespace wiselib
 		if( no_path_reference_number_ == Packet_Pool_Mgr_t::NO_FREE_PACKET )
 		{
 			#ifdef ROUTING_RPL_DEBUG
-			char str[43];
-			debug().debug( "RPLRouting: %s NO FREE PACKET NO_PATH\n", my_address_.get_address(str) );
+			debug().debug( "RPLRouting: NO FREE PACKET NO_PATH\n" );
 			#endif
 			return ERR_UNSPEC;
 		}
@@ -906,9 +889,7 @@ namespace wiselib
 		dao_received_ = false;
 		dis_count_ = 0;
 	
-		
-		timer().template set_timer<self_type, &self_type::start2>( 12000, this, 0 );
-		
+		timer().template set_timer<self_type, &self_type::start2>( 7000, this, 0 );
 		return SUCCESS;
 	}
 
@@ -942,7 +923,9 @@ namespace wiselib
 
 			neighbor_set_.insert( neigh_pair_t( it->first, current_metric ) );
 		}
+		print_neighbor_set();
 
+		//update metric values
 		timer().template set_timer<self_type, &self_type::metric_timer_elapsed>( 30000, this, 0 );
 			
 		if ( state_ == Dodag_root )
@@ -970,8 +953,8 @@ namespace wiselib
 			{
 				//-----------------------------FILLING THE OPTIONS-----------------------------------------
 				//NB: HOP COUNT Constraint and Metric must be placed in different Containers (RFC 6551)
-				dio_current_position = add_hopcount_metric( true, dio_current_position ); //Constraint
-				dio_current_position = add_hopcount_metric( false, dio_current_position ); //Metric
+				//dio_current_position = add_hopcount_metric( true, dio_current_position ); //Constraint
+				//dio_current_position = add_hopcount_metric( false, dio_current_position ); //Metric
 			}
 			
 			//------------------------------------------------------------------------------------------
@@ -985,12 +968,10 @@ namespace wiselib
 			compute_sending_threshold();
 
 			#ifdef ROUTING_RPL_DEBUG
-			char str[43];
-			debug().debug( "\nRPL Routing: %s Start as root/gateway\n", my_address_.get_address(str) );
-			debug().debug( "\nRPL Routing: Main Timer value is %i ms\n", current_interval_);
+			debug().debug( "\nRPL Routing: Start as root/gateway\n" );
 			#endif
 
-			//timer after which I must to double the timer value (if I don't detect inconsistencies)
+			//timer after which I must double the timer value (if I don't detect inconsistencies)
 			timer().template set_timer<self_type, &self_type::timer_elapsed>(
 					current_interval_, this, 0 );
 					
@@ -1010,10 +991,9 @@ namespace wiselib
 			dis_message_->template set_payload<uint8_t>( &setter_byte, 4, 1 );
 			dis_message_->template set_payload<uint8_t>( &setter_byte, 5, 1 );
 			dis_message_->set_transport_length( 6 );
-			timer().template set_timer<self_type, &self_type::dis_delay>( 10000, this, 0 );	
+			timer().template set_timer<self_type, &self_type::dis_delay>( 10000, this, 0 ); //commented	
 			#ifdef ROUTING_RPL_DEBUG
-			char str[43];
-			debug().debug( "RPLRouting: %s Start as ordinary node\n", my_address_.get_address(str) );
+			debug().debug( "RPLRouting: Start as ordinary node\n" );
 			#endif
 		}
 		
@@ -1035,8 +1015,7 @@ namespace wiselib
 		if( pointer == Packet_Pool_Mgr_t::NO_FREE_PACKET )
 		{
 			#ifdef ROUTING_RPL_DEBUG
-			char str[43];
-			debug().debug( "RPLRouting: %s NO FREE PACKET\n", my_address_.get_address(str) );
+			debug().debug( "RPLRouting: NO FREE PACKET\n" );
 			#endif
 			return ERR_UNSPEC;
 		}
@@ -1094,8 +1073,7 @@ namespace wiselib
 	send_dao( node_id_t destination, uint16_t len, block_data_t *data )   
 	{
 		#ifdef ROUTING_RPL_DEBUG
-		char str[43];
-		debug().debug( "\nRPL Routing: %s SENDING DAO\n", my_global_address_.get_address( str ) );
+		debug().debug( "\nRPL Routing: SENDING DAO\n" );
 		#endif
 		dao_message_->set_transport_next_header( Radio_IP::ICMPV6 );
 		dao_message_->set_hop_limit(255);
@@ -1176,6 +1154,7 @@ namespace wiselib
 		//Send DIS, and Start Timer (RFC6550 18.2.1.1) Floating DODAG if no DIO received
 		//Before creating a Floating Dodag a node has to wait long...
 		//...especially if the entire network (and not only this node) is powering up  
+		char str[43];
 		if ( state_ == Unconnected )
 		{
 			//Unicast to a potential DODAG parent, see neighbor_set
@@ -1193,17 +1172,14 @@ namespace wiselib
 				else
 				{
 					#ifdef ROUTING_RPL_DEBUG
-					char str[43];
-					debug().debug( "\nRPLRouting: %s has no bidirect connection to %s\n", my_address_.get_address(str), it->first.get_address(str) );
+					debug().debug( "\nRPLRouting: No bidirect connection to %s\n", it->first.get_address(str) );
 					#endif
 				}
 			}
 			if( dest != Radio_IP::NULL_NODE_ID )
 			{
 				#ifdef ROUTING_RPL_DEBUG
-				char str[43];
-				char str2[43];
-				debug().debug( "\nRPLRouting: This node %s seems isolated, try to send a Solicitation to neighbor %s\n", my_address_.get_address(str), dest.get_address(str2) );
+				debug().debug( "\nRPLRouting: This node seems isolated, try to send a Solicitation to neighbor %s\n", dest.get_address(str) );
 				#endif
 				send_dis( dest, dis_reference_number_, NULL );
 				//This timer depends on the size of the network
@@ -1213,8 +1189,7 @@ namespace wiselib
 			else
 			{
 				#ifdef ROUTING_RPL_DEBUG
-				char str[43];
-				debug().debug( "\nRPLRouting: This node %s seems isolated, find neighbors again\n", my_address_.get_address(str) );
+				debug().debug( "\nRPLRouting: This node seems isolated, find neighbors again\n" );
 				#endif
 				neighbors_found_ = false;
 				start();
@@ -1310,8 +1285,7 @@ namespace wiselib
 	metric_timer_elapsed( void* userdata )
 	{
 		#ifdef ROUTING_RPL_DEBUG
-		char str[43];
-		debug().debug( "\nRPL Routing: Node %s: Metric timer elapsed\n", my_address_.get_address(str) );
+		debug().debug( "\nRPL Routing: Metric timer elapsed\n" );
 		#endif
 		for (ETX_values_iterator it = etx_computation_.etx_values_.begin(); it != etx_computation_.etx_values_.end(); it++) 
 		{
@@ -1426,8 +1400,7 @@ namespace wiselib
 		if(state_ != Dodag_root && state_ != Router && !dao_received_ )
 		{
 			#ifdef ROUTING_RPL_DEBUG
-			char str[43];
-			debug().debug( "\nRPL Routing: Node %s: I'm a Leaf\n", my_address_.get_address(str) );
+			debug().debug( "\nRPL Routing: I'm a Leaf\n" );
 			#endif
 			
 			state_ = Leaf;
@@ -1435,8 +1408,7 @@ namespace wiselib
 		else if (state_ != Dodag_root && state_ != Router )
 		{
 			#ifdef ROUTING_RPL_DEBUG
-			char str[43];
-			debug().debug( "\nRPL Routing: Node %s: I'm a Router\n", my_address_.get_address(str) );
+			debug().debug( "\nRPL Routing: I'm a Router\n" );
 			#endif
 			state_ = Router;
 		}
@@ -1494,8 +1466,7 @@ namespace wiselib
 		if ( state_ == Unconnected && ALLOW_FLOATING_ROOT != 0 )
 		{
 			#ifdef ROUTING_RPL_DEBUG
-			char str[43];
-			debug().debug( "\nRPL Routing: %s CREATE FLOATING DODAG\n", my_address_.get_address(str) );
+			debug().debug( "\nRPL Routing: CREATE FLOATING DODAG\n" );
 			#endif
 						
 			state_ = Floating_Dodag_root;   //not for a long period of time, especiallly if battery powered
@@ -1549,8 +1520,7 @@ namespace wiselib
 	{
 		char str[43];
 		char str2[43];
-		char str3[43];
-		
+				
 		//Get the packet pointer from the manager
 		IPv6Packet_t* message = packet_pool_mgr_->get_packet_pointer( packet_number ); 
 		
@@ -1568,7 +1538,7 @@ namespace wiselib
 			data = message->payload();
 			uint8_t what = data[9];
 			#ifdef ROUTING_RPL_DEBUG
-			debug().debug( "\nRPL Routing: %s Received MESSAGE from: %s with content: %i\n", my_global_address_.get_address(str), sender.get_address(str2), what);
+			debug().debug( "\nRPL Routing: Received MESSAGE from: %s with content: %i\n", sender.get_address(str), what);
 			#endif
 			
 			packet_pool_mgr_->clean_packet( message );
@@ -1651,7 +1621,7 @@ namespace wiselib
 			if( state_ == Unconnected)	
 			{	
 				#ifdef ROUTING_RPL_DEBUG
-				debug().debug( "RPL Routing: %s State = Unconnected... calling first_dio function\n", my_address_.get_address( str ) );
+				debug().debug( "RPL Routing: State = Unconnected... calling first_dio function\n" );
 				#endif
 				uint16_t check_rank = ( data[6] << 8 ) | data[7];
 				if( check_rank == INFINITE_RANK )
@@ -1675,7 +1645,7 @@ namespace wiselib
 				if( check_rank == INFINITE_RANK || check_rank > MAX_PATH_COST )
 				{
 					#ifdef ROUTING_RPL_DEBUG
-					debug().debug( "\n\nRPL Routing: %s, received INFINITE RANK from %s\n\n", my_address_.get_address(str), sender.get_address(str2) );
+					debug().debug( "\n\nRPL Routing: Received INFINITE RANK from %s\n\n", sender.get_address(str) );
 					#endif
 					parent_set_.erase( sender );
 					//ParentSet_iterator it = parent_set_.find( sender );
@@ -1793,7 +1763,7 @@ namespace wiselib
 				if( version_number_ != data[5] )
 				{
 					#ifdef ROUTING_RPL_DEBUG
-					debug().debug( "\n\nRPL Routing: I'm %s, different version received!?\n\n", my_address_.get_address(str) );
+					debug().debug( "\n\nRPL Routing: Different version received!?\n\n" );
 					#endif
 					if( version_number_ > data[5] )
 					{
@@ -1889,7 +1859,7 @@ namespace wiselib
 						if (it == parent_set_.end())
 						{
 							#ifdef ROUTING_RPL_DEBUG
-							debug().debug( "\nRPLRouting: %s: Parent %s not present in parent set. \n", my_address_.get_address( str ), sender.get_address(str3) );
+							debug().debug( "\nRPLRouting: Parent %s not present in parent set. \n", sender.get_address(str) );
 							#endif
 							map.rank = parent_rank;
 							map.path_cost = parent_path_cost;
@@ -1919,7 +1889,7 @@ namespace wiselib
 							if( parent_path_cost < (cur_min_path_cost_ - PARENT_SWITCH_THRESHOLD) )
 							{	
 								#ifdef ROUTING_RPL_DEBUG
-								debug().debug( "\nRPLRouting: %s: Received (NEW NODE) DIO with 1.5-better rank. Old preferred parent was %s, rank %i. New Preferred parent is %s, rank %i\n", my_address_.get_address( str ), preferred_parent_.get_address( str2 ), cur_min_path_cost_, sender.get_address(str3), parent_path_cost );
+								debug().debug( "\nRPLRouting: Received (NEW NODE) DIO with 1.5-better rank. Old preferred parent was %s, rank %i. New Preferred parent is %s, rank %i\n", preferred_parent_.get_address( str ), cur_min_path_cost_, sender.get_address(str2), parent_path_cost );
 								#endif
 								if( preferred_parent_ != Radio_IP::NULL_NODE_ID )
 									send_no_path_dao( my_global_address_ );
@@ -1976,7 +1946,7 @@ namespace wiselib
 							if ( sender == preferred_parent_ )
 							{	
 								#ifdef ROUTING_RPL_DEBUG
-								debug().debug( "\nRPLRouting: %s: Preferred parent %s changed its rank: %i, cost: %i. FINDING NEW PREFERRED PARENT\n", my_address_.get_address( str ), sender.get_address( str2 ), parent_rank, parent_path_cost );
+								debug().debug( "\nRPLRouting: Preferred parent %s changed its rank: %i, cost: %i. FINDING NEW PREFERRED PARENT\n", sender.get_address( str2 ), parent_rank, parent_path_cost );
 								#endif
 								node_id_t best = Radio_IP::NULL_NODE_ID;
 								uint16_t current_best_path_cost = 0xFFFF;
@@ -2033,7 +2003,7 @@ namespace wiselib
 								if( parent_path_cost < (cur_min_path_cost_ - PARENT_SWITCH_THRESHOLD) )
 								{
 									#ifdef ROUTING_RPL_DEBUG
-									debug().debug( "\nRPLRouting: %s: Received DIO with 1.5-better rank. Old preferred parent was %s, rank %i. New Preferred parent is %s, rank %i\n", my_address_.get_address( str ), preferred_parent_.get_address( str2 ), cur_min_path_cost_, sender.get_address(str3), parent_path_cost );
+									debug().debug( "\nRPLRouting: Received DIO with 1.5-better rank. Old preferred parent was %s, rank %i. New Preferred parent is %s, rank %i\n", preferred_parent_.get_address( str ), cur_min_path_cost_, sender.get_address(str2), parent_path_cost );
 									#endif
 									//send no-dao to the old preferred_parent
 									send_no_path_dao( my_global_address_ );
@@ -2102,7 +2072,7 @@ namespace wiselib
 								}
 								
 								#ifdef ROUTING_RPL_DEBUG
-								debug().debug( "\nRPLRouting: %s: Preferred parent %s changed its dtsn.\n", my_address_.get_address( str ), sender.get_address( str2 ));
+								debug().debug( "\nRPLRouting: Preferred parent %s changed its dtsn.\n", sender.get_address( str ));
 								#endif
 
 								//update dao_sequence!!!!
@@ -2114,7 +2084,7 @@ namespace wiselib
 								if( dao_ack_received_ )
 								{
 									#ifdef ROUTING_RPL_DEBUG
-									debug().debug( "\nRPLRouting: Activate DAO Timer.\n", my_address_.get_address( str ), sender.get_address( str2 ));
+									debug().debug( "\nRPLRouting: Activate DAO Timer.\n" );
 									#endif
 									//reactivate dao_timer
 									dao_ack_received_ = false;
@@ -2145,7 +2115,7 @@ namespace wiselib
 							//send no-path only if the preferred parent changes
 							
 							#ifdef ROUTING_RPL_DEBUG
-							debug().debug( "\nRPLRouting: %s: Preferred parent %s changed its rank: %i, cost: %i. FINDING NEW PREFERRED PARENT\n", my_address_.get_address( str ), sender.get_address( str2 ), parent_rank, parent_path_cost );
+							debug().debug( "\nRPLRouting: Preferred parent %s changed its rank: %i, cost: %i. FINDING NEW PREFERRED PARENT\n", sender.get_address(str), parent_rank, parent_path_cost );
 							#endif
 							node_id_t best = Radio_IP::NULL_NODE_ID;
 							uint16_t current_best_path_cost = 0xFFFF;
@@ -2190,7 +2160,7 @@ namespace wiselib
 						if( state_ == Leaf )
 						{
 							#ifdef ROUTING_RPL_DEBUG
-							debug().debug( "\nRPL Routing: %s Leaf with Good Rank, Change state to Router\n", my_address_.get_address( str ) );
+							debug().debug( "\nRPL Routing: Leaf with Good Rank, Change state to Router\n" );
 							#endif							
 							state_ = Router;
 							timer().template set_timer<self_type, &self_type::timer_elapsed>( current_interval_, this, 0 );
@@ -2224,9 +2194,7 @@ namespace wiselib
 			if( state_ == Unconnected || rank_ == INFINITE_RANK )
 				return;
 			#ifdef ROUTING_RPL_DEBUG
-			char str[43];
-			char str2[43];
-			debug().debug( "RPLRouting: %s Received DIS from %s, Reset Trickle timer...\n", my_address_.get_address(str), sender.get_address(str2) );
+			debug().debug( "RPLRouting: Received DIS from %s, Reset Trickle timer...\n", sender.get_address(str) );
 			#endif
 			//Instead of sending a DIO, reset the timer!
 			//send_dio( sender, dio_reference_number_, NULL );
@@ -2288,7 +2256,8 @@ namespace wiselib
 				//Update routing table... and then send the update to the parent(s)
 				uint8_t addr[16];
 				memcpy(addr, data + 28 ,16);
-				//This address needs to be rearranged before setting it
+				//This address needs to be rearranged before setting it (if SHAWN)
+				#ifdef SHAWN
 				uint8_t k = 0;
 				for( uint8_t i = 15; i>7; i--)
 				{
@@ -2298,6 +2267,7 @@ namespace wiselib
 					addr[k] = temp;
 					k++;
 				}
+				#endif
 					
 				node_id_t target;
 				target.set_address(addr);
@@ -2315,7 +2285,7 @@ namespace wiselib
 					if ( data[49] == 0 )
 					{
 						#ifdef ROUTING_RPL_DEBUG
-						debug().debug( "\nRPL Routing: %s Received NO-PATH with target %s, next hop %s\n", my_address_.get_address(str), target.get_address(str2), sender.get_address(str3) );
+						debug().debug( "\nRPL Routing: Received NO-PATH with target %s, next hop %s\n", target.get_address(str), sender.get_address(str2) );
 						#endif
 
 						//Before deleting check if the next hop matches the link-local sender...
@@ -2365,8 +2335,9 @@ namespace wiselib
 					}
 					if ( data[49] == 0 )
 					{
-						debug().debug( "\nRPL Routing: %s Received NO-PATH with target %s, next hop %s\n", my_address_.get_address(str), target.get_address(str2), sender.get_address(str3) );
-
+						#ifdef ROUTING_RPL_DEBUG
+						debug().debug( "\nRPL Routing: Received NO-PATH with target %s, next hop %s\n", target.get_address(str), sender.get_address(str2) );
+						#endif
 						message->remote_ll_address = Radio_P::NULL_NODE_ID;
 						message->target_interface = NUMBER_OF_INTERFACES;
 						message->set_source_address(my_address_);
@@ -2404,8 +2375,7 @@ namespace wiselib
 								
 
 				#ifdef ROUTING_RPL_DEBUG
-				char str3[43];
-				debug().debug( "\nRPL Routing: %s Received DAO with target: %s, next_hop: %s\n", my_address_.get_address(str), target.get_address(str2), sender.get_address(str3) );
+				debug().debug( "\nRPL Routing: Received DAO with target: %s, next_hop: %s\n", target.get_address(str), sender.get_address(str2) );
 				#endif
 
 				if( state_ == Dodag_root || state_ == Floating_Dodag_root )
@@ -2459,8 +2429,7 @@ namespace wiselib
 			if( rcvd_dao_sequence == dao_sequence_ )
 			{
 				#ifdef ROUTING_RPL_DEBUG
-				char str3[43];
-				debug().debug( "\nRPL Routing: %s Received DAO-ACK! STOP DAO TIMER...\n", my_address_.get_address(str) );
+				debug().debug( "\nRPL Routing: Received DAO-ACK! STOP DAO TIMER...\n" );
 				#endif
 				dao_ack_received_ = true;
 			}
@@ -2483,7 +2452,6 @@ namespace wiselib
 	first_dio( node_id_t from, block_data_t *data, uint16_t length )
 	{
 		char str[43];
-		char str2[43];
 		/*
 		#ifdef ROUTING_RPL_DEBUG
 		char str[43];
@@ -2605,7 +2573,7 @@ namespace wiselib
 
 		
 		#ifdef ROUTING_RPL_DEBUG
-		debug().debug( "\n\n\nRPL Routing: Node %s is starting the timers\n\n", my_address_.get_address(str) );
+		debug().debug( "\n\n\nRPL Routing: Starting the timers\n\n" );
 		#endif
 		
 		timer().template set_timer<self_type, &self_type::leaf_timer_elapsed>( current_interval_ + 2500, this, 0 );
@@ -2666,6 +2634,7 @@ namespace wiselib
 			else if( option_type == DAG_METRIC_CONTAINER )
 			{
 				uint8_t metric_type = data [ length_checked + 2 ];
+				/*
 				if( metric_type == HOP_COUNT )
 				{
 					//Verify if the metric is a constraint one (C flag set, 7th bit) or a routing one
@@ -2740,6 +2709,7 @@ namespace wiselib
 						}
 					}
 				}
+				*/
 				//else if (Other Metric types...)
 			}
 
@@ -2901,9 +2871,8 @@ namespace wiselib
 				{
 					#ifdef ROUTING_RPL_DEBUG
 					char str[43];
-					char str2[43];
-					
-					debug().debug( "\n\nRPL Routing: (ETX) I'm %s, first DIO: ENTRY %s NOT PRESENT!?\n\n", my_address_.get_address(str), from.get_address(str2) );
+										
+					debug().debug( "\n\nRPL Routing: (ETX) First DIO: ENTRY %s NOT PRESENT!?\n\n", from.get_address(str) );
 					#endif
 					return;
 				}
@@ -2911,9 +2880,8 @@ namespace wiselib
 				rank_inc = it->second;
 
 				#ifdef ROUTING_RPL_DEBUG
-				char str[43];
-				
-				debug().debug( "\n\n\nRPL Routing: %s, Rank Increase is %f\n\n", my_address_.get_address(str), rank_inc );
+								
+				debug().debug( "\n\nRPL Routing: Rank Increase is %f\n\n", rank_inc );
 				#endif
 
 				rank_ = rank_inc + parent_rank;
@@ -2945,8 +2913,7 @@ namespace wiselib
 
 		#ifdef ROUTING_RPL_DEBUG
 		char str[43];
-		char str2[43];
-		debug().debug( "\n\n\nRPL Routing: %s, Preferred parent %s Set DIO New Rank is : RANK %i\n\n", my_address_.get_address(str), preferred_parent_.get_address(str2), rank_  );
+		debug().debug( "\n\n\nRPL Routing: %s, Preferred parent %s Set DIO New Rank is : RANK %i\n\n", preferred_parent_.get_address(str), rank_  );
 		#endif
 		
 		dio_message_->template set_payload<uint16_t>( &rank_, 6, 1 );
@@ -2966,6 +2933,7 @@ namespace wiselib
 		uint8_t addr[16];
 		memcpy(addr, data + 12 ,16);
 		//This address needs to be rearranged before setting it
+		#ifdef SHAWN		
 		uint8_t k = 0;
 		for( uint8_t i = 15; i>7; i--)
 		{
@@ -2975,6 +2943,7 @@ namespace wiselib
 			addr[k] = temp;
 			k++;
 		}
+		#endif
 		
 		dodag_id_.set_address(addr);
 		
@@ -3018,7 +2987,7 @@ namespace wiselib
 	}
 
 	// -----------------------------------------------------------------------
-	
+	/*
 	template<typename OsModel_P,
 		typename Radio_IP_P,
 		typename Radio_P,
@@ -3073,6 +3042,7 @@ namespace wiselib
 		
 		return position + 8;
 	}
+	*/
 
 	// -----------------------------------------------------------------------
 	
@@ -3337,8 +3307,7 @@ namespace wiselib
 		
 		#ifdef ROUTING_RPL_DEBUG
 		char str[43];
-		char str2[43];
-		debug().debug( "\nRPL Routing: %s SENDING NO PATH DAO to %s\n", my_global_address_.get_address( str ), old_preferred_parent_.get_address(str2) );
+		debug().debug( "\nRPL Routing: SENDING NO PATH DAO to %s\n", old_preferred_parent_.get_address(str) );
 		#endif
 		
 		//radio_ip().send( old_preferred_parent_, no_path_reference_number_, NULL );
@@ -3412,7 +3381,7 @@ namespace wiselib
 		#ifdef ROUTING_RPL_DEBUG
 		char str[43];
 		char str2[43];
-		debug().debug( "\nRPLRouting: %s is setting new preferred_parent %s, path cost %i\n, parent_rank: %i", my_address_.get_address( str ), parent.get_address( str2 ), path_cost, it->second.rank );
+		debug().debug( "\nRPLRouting: Setting new preferred_parent %s, path cost %i\n, parent_rank: %i", parent.get_address( str2 ), path_cost, it->second.rank );
 		#endif
 		preferred_parent_ = parent; 
 		//update default route
@@ -3493,8 +3462,7 @@ namespace wiselib
 				uint16_t sender_rank = ( data_pointer[4] << 8 ) | data_pointer[5];
 				uint16_t compare_rank = DAGRank( sender_rank );
 				#ifdef ROUTING_RPL_DEBUG
-				char str[43];
-				debug().debug( "\nRPL Routing: %s FINAL DESTINATION, my rank is %i\n", my_global_address_.get_address( str ), DAGRank( rank_ ) );
+				debug().debug( "\nRPL Routing: FINAL DESTINATION, my rank is %i\n", DAGRank( rank_ ) );
 				#endif
 
 				if( compare_rank == 0 )
@@ -3583,7 +3551,6 @@ namespace wiselib
 			#ifdef ROUTING_RPL_DEBUG
 			char str[43];
 			char str2[43];
-			char str3[43];
 			#endif
 
 			if(data_pointer[3] == 0 ) //this means that the node is the source
@@ -3592,7 +3559,7 @@ namespace wiselib
 				if( state_ == Unconnected )
 				{
 					#ifdef ROUTING_RPL_DEBUG
-					debug().debug( "\nRPL Routing: %s NOT CONECTED TO THE DODAG!\n", my_address_.get_address( str ) );
+					debug().debug( "\nRPL Routing: NOT CONECTED TO THE DODAG!\n" );
 					#endif
 					return  Radio_IP::DROP_PACKET;
 				}
@@ -3614,7 +3581,7 @@ namespace wiselib
 				if( it != radio_ip().routing_.forwarding_table_.end() )
 				{
 					#ifdef ROUTING_RPL_DEBUG
-					debug().debug( "\nRPL Routing: Source %s. FT contains destination %s, next hop is: %s\n", my_global_address_.get_address( str ), destination.get_address(str2), it->second.next_hop.get_address(str3) );
+					debug().debug( "\nRPL Routing: Source. FT contains destination %s, next hop is: %s\n", destination.get_address(str), it->second.next_hop.get_address(str2) );
 					#endif
 
 					//CHECK REACHABILITY OF NEXT HOP THROUGH NEIGHBOR DISCOVERY ENTRIES
@@ -3749,7 +3716,7 @@ namespace wiselib
 					}
 			
 					#ifdef ROUTING_RPL_DEBUG
-					debug().debug( "\nRPL Routing: Source %s. Forwarding message to default route %s for destination %s \n", my_global_address_.get_address(str3), preferred_parent_.get_address(str), destination.get_address(str2));
+					debug().debug( "\nRPL Routing: Source. Forwarding message to default route %s for destination %s \n", preferred_parent_.get_address(str), destination.get_address(str2));
 					#endif
 					//SET DOWN BIT = 0, RANK ERROR = 0 (first hop), Forwarding error = 0
 					//uint8_t setter_byte = 0;
@@ -3789,7 +3756,7 @@ namespace wiselib
 						if( forwarding_error == 1 )
 						{
 							#ifdef ROUTING_RPL_DEBUG
-							debug().debug( "\nRPL Routing: 1st INTERMEDIATE NODE %s, Packet returned with Forwarding error. Clean entry in FT (for destination %s) and send the packet to the default route %s\n", my_global_address_.get_address(str), destination.get_address(str2), preferred_parent_.get_address(str3) );
+							debug().debug( "\nRPL Routing: 1st INTERMEDIATE NODE, Packet returned with Forwarding error. Clean entry in FT (for destination %s) and send the packet to the default route %s\n", destination.get_address(str), preferred_parent_.get_address(str2) );
 							#endif
 							
 							radio_ip().routing_.forwarding_table_.erase( it );
@@ -3804,7 +3771,7 @@ namespace wiselib
 						else
 						{
 							#ifdef ROUTING_RPL_DEBUG
-							debug().debug( "\nRPL Routing: 1st INTERMEDIATE NODE %s, FT contains destination %s, next hop is %s\n", my_global_address_.get_address(str), destination.get_address(str2), it->second.next_hop.get_address(str3) );
+							debug().debug( "\nRPL Routing: 1st INTERMEDIATE NODE, FT contains destination %s, next hop is %s\n", destination.get_address(str), it->second.next_hop.get_address(str2) );
 							#endif
 							//CHECK REACHABILITY OF NEXT HOP
 							if( !is_reachable( it->second.next_hop ) )
@@ -3870,7 +3837,7 @@ namespace wiselib
 							else
 							{
 								#ifdef ROUTING_RPL_DEBUG
-								debug().debug( "\nRPL Routing: 1st Interm Node %s. Up again. Forward to default route %s for destination %s \n", my_global_address_.get_address( str3 ), preferred_parent_.get_address(str), destination.get_address(str2) );
+								debug().debug( "\nRPL Routing: 1st Interm Node. Up again. Forward to default route %s for destination %s \n", preferred_parent_.get_address(str), destination.get_address(str2) );
 								#endif	
 				
 								//SET DOWN BIT = 0, RANK ERROR = 0 (first hop), Forwarding error = 0
@@ -4080,7 +4047,7 @@ namespace wiselib
 						{ 
 							//DOWN AGAIN
 							#ifdef ROUTING_RPL_DEBUG
-							debug().debug( "\nRPL Routing: INTERMEDIATE NODE %s, FT contains destination %s, next hop is %s\n", my_global_address_.get_address(str), destination.get_address(str2), it->second.next_hop.get_address(str3) );
+							debug().debug( "\nRPL Routing: INTERMEDIATE NODE, FT contains destination %s, next hop is %s\n", destination.get_address(str), it->second.next_hop.get_address(str2) );
 							#endif
 							//CHECK REACHABILITY OF NEXT HOP
 							if( !is_reachable( it->second.next_hop ) )
@@ -4114,7 +4081,7 @@ namespace wiselib
 							if( forwarding_error == 1 )
 							{
 								#ifdef ROUTING_RPL_DEBUG
-								debug().debug( "\nRPL Routing: INTERMEDIATE NODE %s, Packet returned with Forwarding error. Clean entry in FT (for destination %s) and send the packet to the default route %s\n", my_global_address_.get_address(str), destination.get_address(str2), preferred_parent_.get_address(str3) );
+								debug().debug( "\nRPL Routing: INTERMEDIATE NODE, Packet returned with Forwarding error. Clean entry in FT (for destination %s) and send the packet to the default route %s\n", destination.get_address(str), preferred_parent_.get_address(str2) );
 								#endif
 							
 								radio_ip().routing_.forwarding_table_.erase( it );
@@ -4128,7 +4095,7 @@ namespace wiselib
 							else
 							{
 								#ifdef ROUTING_RPL_DEBUG
-								debug().debug( "\nRPL Routing: INTERMEDIATE NODE %s, FT contains destination %s, next hop is %s, CHANGE DIRECTION\n", my_global_address_.get_address(str), destination.get_address(str2), it->second.next_hop.get_address(str3) );
+								debug().debug( "\nRPL Routing: INTERMEDIATE NODE, FT contains destination %s, next hop is %s, CHANGE DIRECTION\n", destination.get_address(str), it->second.next_hop.get_address(str2) );
 								#endif
 								//CHECK REACHABILITY OF NEXT HOP
 								if( !is_reachable( it->second.next_hop ) )
@@ -4184,7 +4151,7 @@ namespace wiselib
 							//WAS DOWN
 							//set forwarding error, and back to the preferred parent
 							#ifdef ROUTING_RPL_DEBUG
-							debug().debug( "\nRPL Routing: Node %s INTERMEDIATE NODE, going up again again. Forward packet to default route %s for destination %s, \n", my_global_address_.get_address(str3), preferred_parent_.get_address(str2), destination.get_address(str));
+							debug().debug( "\nRPL Routing: INTERMEDIATE NODE, going up again again. Forward packet to default route %s for destination %s, \n", preferred_parent_.get_address(str2), destination.get_address(str));
 							#endif
 							//CLEAR DOWN BIT, RANK ERROR (verify), Forwarding error = 1
 							if( rank_error == 1 )
@@ -4197,7 +4164,7 @@ namespace wiselib
 						{
 							//WAS UP
 							#ifdef ROUTING_RPL_DEBUG
-							debug().debug( "\nRPL Routing: Node %s INTERMEDIATE NODE, going up again again. Forward packet to default route %s for destination %s, \n", my_global_address_.get_address(str3), preferred_parent_.get_address(str2), destination.get_address(str));
+							debug().debug( "\nRPL Routing: INTERMEDIATE NODE, going up again again. Forward packet to default route %s for destination %s, \n", preferred_parent_.get_address(str2), destination.get_address(str));
 							#endif
 						}
 						
@@ -4324,16 +4291,15 @@ namespace wiselib
 	RPLRouting<OsModel_P, Radio_IP_P, Radio_P, Debug_P, Timer_P, Clock_P>::
 	print_parent_set()
 	{
-		char str[43];
 		#ifdef ROUTING_RPL_DEBUG
-		debug().debug( "\nRPL Routing: Node %s, Parent Set with relative rank and path cost: \n", my_address_.get_address(str));
+		debug().debug( "\nRPL Routing: Parent Set with relative rank and path cost: \n" );
 		#endif
 		int i = 0;
 		for( ParentSet_iterator it = parent_set_.begin(); it != parent_set_.end(); it++ )
 		{
-			char str2[43];
+			char str[43];
 			#ifdef ROUTING_RPL_DEBUG
-			debug().debug( "\n %i: %s, %i, %i ", i, it->first.get_address(str2), it->second.rank, it->second.path_cost );
+			debug().debug( "\n %i: %s, %i, %i ", i, it->first.get_address(str), it->second.rank, it->second.path_cost );
 			#endif
 			i = i + 1;
 		}
@@ -4353,16 +4319,16 @@ namespace wiselib
 	{
 		char str[43];
 		#ifdef ROUTING_RPL_DEBUG
-		debug().debug( "\nRPL Routing: Node %s, Neighbor Set: \n", my_address_.get_address(str));
+		debug().debug( "\nRPL Routing: Neighbor Set: \n");
 		#endif
 		int i = 0;
 
 
 		for (NeighborSet_iterator it = neighbor_set_.begin(); it != neighbor_set_.end(); it++) 
 		{
-			char str2[43];
+			char str[43];
 			#ifdef ROUTING_RPL_DEBUG
-			debug().debug( "\n %i: %s ", i, it->first.get_address(str2));
+			debug().debug( "\n %i: %s ", i, it->first.get_address(str));
 			#endif
 			i = i + 1;
 		}
