@@ -415,6 +415,7 @@ namespace wiselib
 		{				
 			if (num == 0)
 			{
+				//uint32_t t = 23456;
 				uint32_t t = milliseconds(time()) + 1000*seconds(time());
 				current_interval_ = (t % (imax_ - imin_)) + imin_;
 							
@@ -886,7 +887,7 @@ namespace wiselib
 		dao_received_ = false;
 		dis_count_ = 0;
 	
-		timer().template set_timer<self_type, &self_type::start2>( 16000, this, 0 );
+		timer().template set_timer<self_type, &self_type::start2>( 10000, this, 0 );
 		return SUCCESS;
 	}
 
@@ -924,7 +925,7 @@ namespace wiselib
 		print_neighbor_set();
 
 		//update metric values
-		timer().template set_timer<self_type, &self_type::metric_timer_elapsed>( 4000, this, 0 );
+		timer().template set_timer<self_type, &self_type::metric_timer_elapsed>( 30000, this, 0 );
 			
 		if ( state_ == Dodag_root )
 		{		
@@ -1314,7 +1315,7 @@ namespace wiselib
 			else
 				neighbor_set_.erase( it->first );
 		}
-		timer().template set_timer<self_type, &self_type::metric_timer_elapsed>( 4000, this, 0 );
+		timer().template set_timer<self_type, &self_type::metric_timer_elapsed>( 30000, this, 0 );
 	}
 
 	// -----------------------------------------------------------------------

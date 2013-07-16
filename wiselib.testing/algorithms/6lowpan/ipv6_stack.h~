@@ -37,7 +37,7 @@
 #include "algorithms/6lowpan/icmpv6.h"
 #include "algorithms/6lowpan/udp.h"
 
-#ifdef RPL_DEFINED
+#ifdef RPL_CONFIGURED
 #include "algorithms/routing/rpl/rpl_routing.h" //mine
 #endif
 
@@ -99,7 +99,7 @@ namespace wiselib
 		typedef wiselib::IPv6PacketPoolManager<OsModel, Radio, Debug> Packet_Pool_Mgr_t;
 
 		typedef wiselib::NDStorage<Radio, Debug> NDStorage_t;
-		#ifdef RPL_DEFINED
+		#ifdef RPL_CONFIGURED
 		typedef wiselib::RPLRouting<OsModel, IPv6_t, Radio, Debug, Timer, Clock> RPL_t;	
 		#endif
 		enum ErrorCodes
@@ -170,7 +170,7 @@ namespace wiselib
 				icmpv6.ND_timeout_manager_function( NULL );
 			*/
 			
-			#ifdef RPL_DEFINED
+			#ifdef RPL_CONFIGURED
 			//Init RPLRouting
 			rpl.init( ipv6, *radio_, *debug_, *timer_, *clock_, &packet_pool_mgr);
 									
@@ -185,7 +185,7 @@ namespace wiselib
 		ICMPv6_t icmpv6; 
 		UDP_t udp;
 		InterfaceManager_t interface_manager;
-		#ifdef RPL_DEFINED
+		#ifdef RPL_CONFIGURED
 		RPL_t rpl;
 		#endif
 		

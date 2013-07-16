@@ -474,7 +474,7 @@ namespace wiselib
 			
 			ForwardingTableValue entry(next_hop, 0, 5, InterfaceManager_t::INTERFACE_RADIO);
 			//ForwardingTableValue entry(next_hop, 0, 5, InterfaceManager_t::INTERFACE_UART);
-			#ifndef RPL_DEFINED
+			#ifndef RPL_CONFIGURED
 			forwarding_table_[requested_destination_] = entry; 
 			#endif
 			failed_alive_ = false;

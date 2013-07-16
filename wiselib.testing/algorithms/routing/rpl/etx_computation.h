@@ -26,10 +26,10 @@
 #define __ALGORITHMS_ROUTING_ETX_COMPUTATION_H__
 
 #include "util/base_classes/routing_base.h"
-//#include "util/base_classes/radio_base.h"
 #include "util/pstl/map_static_vector.h"
-//#include "algorithms/6lowpan/ipv6.h"
 #include "algorithms/6lowpan/ipv6_packet_pool_manager.h"
+
+#define SET_LOCALITY 5
 
 
 namespace wiselib
@@ -66,7 +66,7 @@ namespace wiselib
 
 		struct Mapped_timers
 		{
-			uint8_t count;
+			//uint8_t count;
 			uint8_t timers[5];
 		};
 				
@@ -336,7 +336,7 @@ namespace wiselib
 	{
 		if( stop_timer_ )
 			return;
-		timer().template set_timer<self_type, &self_type::periodic_bcast_elapsed>( 1000, this, 0 );
+		timer().template set_timer<self_type, &self_type::periodic_bcast_elapsed>( 4000, this, 0 );
 		//elapses every 1 second (or more?)
 		//add the payload
 		uint8_t entries = 0;
@@ -362,7 +362,7 @@ namespace wiselib
 		for( ETX_count_iterator it = etx_count_.begin(); it != etx_count_.end(); it++) 
 		{
 			uint8_t count_probes = 0;
-			for(int i = 0; i <= 4; i++ )
+			for(int i = 0; i <= SET_LOCALITY - 1; i++ )
 				count_probes = count_probes + it->second.timers[i];
 			
 			ETX_values_iterator it2 = etx_values_.find( it->first );
@@ -383,36 +383,26 @@ namespace wiselib
 			
 		}
 		
-		if( timer_count_ < 5 )
+		if( timer_count_ < SET_LOCALITY )
 			timer_count_ = timer_count_ + 1;
 			
 		//Here I trigger a 5 second timer and assign a value to it
-		if( latest_timer_ == 5 )
+		if( latest_timer_ == SET_LOCALITY )
 			latest_timer_ = 1;
 		else
 			latest_timer_ = latest_timer_ + 1;
 
-		if( latest_timer_ == 1 )
-			timer().template set_timer<self_type, &self_type::probes_window_elapsed>( 5000, this, &t1 );
-		else if( latest_timer_ == 2 )
-			timer().template set_timer<self_type, &self_type::probes_window_elapsed>( 5000, this, &t2 );
-		else if( latest_timer_ == 3 )
-			timer().template set_timer<self_type, &self_type::probes_window_elapsed>( 5000, this, &t3 );
-		else if( latest_timer_ == 4 )
-			timer().template set_timer<self_type, &self_type::probes_window_elapsed>( 5000, this, &t4 );
-		else if( latest_timer_ == 5 )
-			timer().template set_timer<self_type, &self_type::probes_window_elapsed>( 5000, this, &t5 );
-		/*else if( latest_timer_ == 6 )
-			timer().template set_timer<self_type, &self_type::probes_window_elapsed>( 10000, this, &t6 );
-		else if( latest_timer_ == 7 )
-			timer().template set_timer<self_type, &self_type::probes_window_elapsed>( 10000, this, &t7 );
-		else if( latest_timer_ == 8 )
-			timer().template set_timer<self_type, &self_type::probes_window_elapsed>( 10000, this, &t8 );
-		else if( latest_timer_ == 9 )
-			timer().template set_timer<self_type, &self_type::probes_window_elapsed>( 10000, this, &t9 );
-		else if( latest_timer_ == 10 )
-			timer().template set_timer<self_type, &self_type::probes_window_elapsed>( 10000, this, &t10 );
-		*/		
+		if( latest_timer_ == t1 )
+			timer().template set_timer<self_type, &self_type::probes_window_elapsed>( 4000, this, &t1 );
+		else if( latest_timer_ == t2 )
+			timer().template set_timer<self_type, &self_type::probes_window_elapsed>( 4000, this, &t2 );
+		else if( latest_timer_ == t3 )
+			timer().template set_timer<self_type, &self_type::probes_window_elapsed>( 4000, this, &t3 );
+		else if( latest_timer_ == t4 )
+			timer().template set_timer<self_type, &self_type::probes_window_elapsed>( 4000, this, &t4 );
+		else if( latest_timer_ == t5 )
+			timer().template set_timer<self_type, &self_type::probes_window_elapsed>( 4000, this, &t5 );
+
 	}
 
 	// -----------------------------------------------------------------------
@@ -441,7 +431,7 @@ namespace wiselib
 			if( it->second.timers[ num ] == 1 )
 			{
 				it->second.timers[ num ] = 0;
-				it->second.count = it->second.count - 1;
+				//it->second.count = it->second.count - 1;
 			}
 		}
 		
@@ -498,7 +488,7 @@ namespace wiselib
 		if( it == etx_count_.end() )
 		{
 			Mapped_timers map;
-			map.count = 1;
+			//map.count = 1;
 			map.timers[0] = 0;
 			map.timers[1] = 0;
 			map.timers[2] = 0;
@@ -517,9 +507,10 @@ namespace wiselib
 			map2.reverse = 1;
 			etx_values_.insert( values_pair_t( from, map2 ) );
 		}
-		else
+		/*else
 			it->second.count = it->second.count + 1;
-
+		*/
+		
 		if( latest_timer_ == 1 )
 			it->second.timers[0] = 1;
 		else if( latest_timer_ == 2 )
