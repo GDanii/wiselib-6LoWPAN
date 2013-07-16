@@ -1267,7 +1267,7 @@ namespace wiselib
 			more_dio_count_ = more_dio_count_ - 1;
 		}
 		else
-			more_dio_count_ = 0;
+			more_dio_count_ = 2;
 	}
 
 	// -----------------------------------------------------------------------
@@ -3484,21 +3484,23 @@ namespace wiselib
 						if( state_ != Dodag_root )
 						{
 
-							//THINK ABOUT IT!! (REMEMBER)
 							//Local Repair
-							//send_no_path_dao( my_global_address_ );
+							send_no_path_dao( my_global_address_ );
 
-							//rank_ = INFINITE_RANK;
-
+							stop_dio_timer_ = true;
+				
+							rank_ = INFINITE_RANK;
+							update_dio( Radio_IP::NULL_NODE_ID ,rank_ );
 							//update the field in the DIO message!
 		
-							//stop_dio_timer_ = true;
-	
+							
 							//This message may be lost in the network
-							//send_dio( Radio_IP::BROADCAST_ADDRESS, dio_reference_number_, NULL );
+							send_dio( Radio_IP::BROADCAST_ADDRESS, dio_reference_number_, NULL );
+							
+							timer().template set_timer<self_type, &self_type::more_dio_timer_elapsed>( 100, this, 0 );
 
 							//Is this necessary? This node will eventually receives DIOs from Neighbors without sending any solicitation! 	
-							//send_dis( Radio_IP::BROADCAST_ADDRESS, dis_reference_number_, NULL );
+							send_dis( Radio_IP::BROADCAST_ADDRESS, dis_reference_number_, NULL );
 		
 						}
 						else{
@@ -3988,19 +3990,23 @@ namespace wiselib
 
 							if( state_ != Dodag_root )
 							{
-								//THINK ABOUT IT!! (REMEMBER)
 								//Local Repair
-								//send_no_path_dao( my_global_address_ );
+								send_no_path_dao( my_global_address_ );
 
-								//rank_ = INFINITE_RANK;
+								stop_dio_timer_ = true;
+				
+								rank_ = INFINITE_RANK;
+								update_dio( Radio_IP::NULL_NODE_ID ,rank_ );
+								//update the field in the DIO message!
 		
-								//stop_dio_timer_ = true;
-	
+							
 								//This message may be lost in the network
-								//send_dio( Radio_IP::BROADCAST_ADDRESS, dio_reference_number_, NULL );
+								send_dio( Radio_IP::BROADCAST_ADDRESS, dio_reference_number_, NULL );
+							
+								timer().template set_timer<self_type, &self_type::more_dio_timer_elapsed>( 100, this, 0 );
 
 								//Is this necessary? This node will eventually receives DIOs from Neighbors without sending any solicitation! 	
-								//send_dis( Radio_IP::BROADCAST_ADDRESS, dis_reference_number_, NULL );
+								send_dis( Radio_IP::BROADCAST_ADDRESS, dis_reference_number_, NULL );
 		
 							}
 							else{
@@ -4014,7 +4020,6 @@ namespace wiselib
 		
 								start();
 							}
-								//REMEMBER!!!!!!!!!!
 							
 							//DROP THE PACKET
 							return Radio_IP::DROP_PACKET;
