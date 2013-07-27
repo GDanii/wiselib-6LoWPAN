@@ -16,44 +16,20 @@
 ** License along with the Wiselib.                                       **
 ** If not, see <http://www.gnu.org/licenses/>.                           **
 ***************************************************************************/
-#ifndef __LOWPAN_CONFIG_H
-#define __LOWPAN_CONFIG_H
+#ifndef __RPL_CONFIG_H
+#define __RPL_CONFIG_H
 
-//6LoWPAN IP packet max size
-#define LOWPAN_IP_PACKET_BUFFER_MAX_SIZE 1500
+//Objective functions (activate one at a time)
 
-//The Contexts number, it should be 16
-#define LOWPAN_CONTEXTS_NUMBER 16
+//#define OF0_ACTIVATED
+#define MRHOF_ACTIVATED
 
-//Number of neighbors in the neighbor cache
-#define LOWPAN_MAX_OF_NEIGHBORS 10
+//Mode: Storing/Non Storing (activate one at a time)
+#define STORING_MODE
+//#define NONSTORING_MODE
 
-//Number of routers in the default routers' list
-#define LOWPAN_MAX_OF_ROUTERS 5
+//Metric type (activate one at a time)
+#define ETX_METRIC
 
-//Number of prefixes per interface
-#define LOWPAN_MAX_PREFIXES 2
-
-//The maximum of stored mesh broadcast sequence numbers
-#define MAX_BROADCAST_SEQUENCE_NUMBERS 15
-
-//IP packet store size
-#define IP_PACKET_POOL_SIZE 8       //was 2
-
-//Forwarding table size in the IPv6 layer
-#define FORWARDING_TABLE_SIZE 50     //was 8
-
-//Minimum: 1, the index starts from 0 at the get_interface function!
-#define NUMBER_OF_INTERFACES 2
-
-//Number of UDP sockets in the UDP layer
-#define NUMBER_OF_UDP_SOCKETS 4
-
-//Select routing method
-#define LOWPAN_ROUTE_OVER
-//#define LOWPAN_MESH_UNDER
-
-//Activate RPL Routing Management
-#define RPL_CONFIGURED
 
 #endif

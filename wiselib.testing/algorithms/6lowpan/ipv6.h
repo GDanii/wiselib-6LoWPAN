@@ -854,6 +854,12 @@
 			char str[43];
 			debug().debug( "IPv6 layer: No route to %s in the forwarding table, the routing algorithm is working!", destination.get_address(str) );
 			#endif
+
+			#ifdef RPL_DEFINED
+			next_hop = routing_.forwarding_table_[NULL_NODE_ID].next_hop;
+			return interface_manager_->send_to_interface( next_hop, packet_number, NULL, target_interface );
+			#endif
+
 			//set timer for polling
 			timer().template set_timer<self_type, &self_type::routing_polling>( CREATION_IN_PROGRESS_DELAY, this, (void*)packet_number);
 			return ROUTING_CALLED;
@@ -1036,7 +1042,7 @@
 			char str[43];
 			debug().debug( "IPv6 layer: Packet forwarding to %s", destination.get_address(str) );
 			#endif
-			
+
 			//delete fields to enable routing
 			message->remote_ll_address = Radio_P::NULL_NODE_ID;
 			message->target_interface = NUMBER_OF_INTERFACES;

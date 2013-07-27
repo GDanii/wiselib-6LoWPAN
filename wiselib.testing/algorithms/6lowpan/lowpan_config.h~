@@ -54,6 +54,6 @@
 //#define LOWPAN_MESH_UNDER
 
 //Activate RPL Routing Management
-#define RPL_CONFIGURED
+//#define RPL_DEFINED
 
 #endif
